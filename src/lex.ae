@@ -1,0 +1,158 @@
+// Lexer for tla's TLA+ subset (README.md). Turns module text into tokens with line and column.
+// The parser needs columns: a TLA+ bullet list (a column of /\ or \/) ends at the first token at
+// or left of its bullets.
+//
+// * Comments are dropped: `\*` to end of line, and nesting `(* ... *)`.
+// * Four or more dashes make a "----" token, four or more = make "====": they open and close a
+//   module.
+// * Operators with several spellings are normalized: \land is /\, \lor is \/, \lnot and \neg are ~,
+//   \union is \cup, \intersect is \cap, =< and \leq are <=, \geq is >=, # is /=, \forall is \A,
+//   \exists is \E, \times is \X, \equiv is <=>. The parser sees only the first spelling.
+
+/// A token's kind.
+import str from "std/string";
+export enum Tk { Eof, Ident, Num, Str, Op }
+
+/// A token. text is an identifier's name, an operator's spelling or a string's value.
+export struct Token {
+    export kind: Tk;
+    export text: string = "";
+    export num: i64 = 0;
+    export line: i64 = 0;               // From 1.
+    export col: i64 = 0;                // From 1.
+}
+
+/// A file's tokens, or the first error ("" if none).
+export struct Lexed {
+    export toks: Token[] = [];
+    export error: string = "";
+}
+
+fn is_alpha(c: u8) -> bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+fn is_digit(c: u8) -> bool { return c >= '0' && c <= '9'; }
+
+// Operator spellings, longest first so the longer wins: "<=>" before "<=".
+let symbols: string[] = [
+    "<=>", "|->", "...", "----", "====",
+    "==", "/\\", "\\/", "=>", "=<", "<=", ">=", "/=", "..", "<<", ">>", "->", "<-", "[]", "<>",
+    "~>", ":>", "@@", "::",
+    "=", "#", "<", ">", "+", "-", "*", "%", "^", "'", "~", "!", "@", ":", ",", "(", ")", "[",
+    "]", "{", "}", "|", ".", "&", "$", "?",
+];
+
+// The normalized spelling of an operator.
+fn canonical(op: string) -> string {
+    return match (op) {
+        "\\land" => "/\\",
+        "\\lor" => "\\/",
+        "\\lnot" | "\\neg" => "~",
+        "\\union" => "\\cup",
+        "\\intersect" => "\\cap",
+        "=<" | "\\leq" => "<=",
+        "\\geq" => ">=",
+        "#" => "/=",
+        "\\forall" => "\\A",
+        "\\exists" => "\\E",
+        "\\times" => "\\X",
+        "\\equiv" => "<=>",
+        _ => op,
+    };
+}
+
+/// The tokens of src.
+export fn lex(src: string) -> Lexed {
+    var out: Lexed = Lexed {};
+    var i: i64 = 0;
+    var line: i64 = 1;
+    var bol: i64 = 0;                   // Start of the current line.
+    let n: i64 = src.len;
+    while (i < n) {
+        let c: u8 = src[i];
+        if (c == '\n') {
+            i += 1;
+            line += 1;
+            bol = i;
+            continue;
+        }
+        if (c == ' ' || c == '\t' || c == '\r') { i += 1; continue; }
+        let col: i64 = i - bol + 1;
+        // \* to the end of the line
+        if (c == '\\' && i + 1 < n && src[i + 1] == '*') {
+            while (i < n && src[i] != '\n') { i += 1; }
+            continue;
+        }
+        // (* ... *), nested
+        if (c == '(' && i + 1 < n && src[i + 1] == '*') {
+            var depth: i64 = 0;
+            while (i < n) {
+                if (src[i] == '(' && i + 1 < n && src[i + 1] == '*') {
+                    depth += 1;
+                    i += 2;
+                } else if (src[i] == '*' && i + 1 < n && src[i + 1] == ')') {
+                    depth -= 1;
+                    i += 2;
+                    if (depth == 0) { break; }
+                } else {
+                    if (src[i] == '\n') {
+                        line += 1;
+                        bol = i + 1;
+                    }
+                    i += 1;
+                }
+            }
+            if (depth != 0) {
+                out.error = "\(line):\(col): a comment that is never closed";
+                return out;
+            }
+            continue;
+        }
+        if (is_digit(c)) {
+            var v: i64 = 0;
+            let start: i64 = i;
+            while (i < n && is_digit(src[i])) {
+                v = v * 10 + (src[i] - '0') as i64;
+                i += 1;
+            }
+            // TLA+ allows names starting with digits (1a).
+            if (i < n && is_alpha(src[i])) {
+                while (i < n && (is_alpha(src[i]) || is_digit(src[i]))) { i += 1; }
+                out.toks.push(Token { kind: Tk::Ident, text: src[start..i], line: line, col: col });
+                continue;
+            }
+            out.toks.push(Token { kind: Tk::Num, num: v, text: src[start..i], line: line, col: col });
+            continue;
+        }
+        if (is_alpha(c)) {
+            let start: i64 = i;
+            while (i < n && (is_alpha(src[i]) || is_digit(src[i]))) { i += 1; }
+            out.toks.push(Token { kind: Tk::Ident, text: src[start..i], line: line, col: col });
+            continue;
+        }
+        if (c == '"') {
+            i += 1;
+            var s: string = "";
+            while (i < n && src[i] != '"') {
+                if (src[i] == '\n') {
+                    out.error = "\(line):\(col): a string that is never closed";
+                    return out;
+                }
+                if (src[i] == '\\' && i + 1 < n) {
+                    let e: u8 = src[i + 1];
+                    let r: string = match (e) {
+                        'n' => "\n",
+                        't' => "\t",
+                        '"' => "\"",
+                        '\\' => "\\",
+                        _ => "",
+                    };
+                    if (r.len == 0) {
+                        out.error = "\(line):\(col): an escape TLA+ does not have in a string";
+                    }
+                }
+            }
+        }
+    }
+}
