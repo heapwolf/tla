@@ -150,9 +150,62 @@ export fn lex(src: string) -> Lexed {
                     };
                     if (r.len == 0) {
                         out.error = "\(line):\(col): an escape TLA+ does not have in a string";
+                        return out;
                     }
+                    s = "\(s)\(r)";
+                    i += 2;
+                    continue;
                 }
+                let start: i64 = i;
+                while (i < n && src[i] != '"' && src[i] != '\\' && src[i] != '\n') { i += 1; }
+                s = "\(s)\(src[start..i])";
             }
+            if (i >= n) {
+                out.error = "\(line):\(col): a string that is never closed";
+                return out;
+            }
+            i += 1;
+            out.toks.push(Token { kind: Tk::Str, text: s, line: line, col: col });
+            continue;
+        }
+        // Backslash operator: \in, \cup, \A, ... (letters), or \ alone (set difference).
+        if (c == '\\') {
+            if (i + 1 < n && src[i + 1] == '/') {
+                out.toks.push(Token { kind: Tk::Op, text: "\\/", line: line, col: col });
+                i += 2;
+                continue;
+            }
+            let start: i64 = i;
+            i += 1;
+            while (i < n && (is_alpha(src[i]) || is_digit(src[i]))) { i += 1; }
+            out.toks.push(Token { kind: Tk::Op, text: canonical(src[start..i]), line: line, col: col });
+            continue;
+        }
+        // Four or more dashes, or =, are one token.
+        if ((c == '-' || c == '=') && i + 3 < n && src[i + 1] == c && src[i + 2] == c && src[i + 3] == c) {
+            while (i < n && src[i] == c) { i += 1; }
+            let t: string = match (c) { '-' => "----", _ => "====" };
         }
     }
+}
+
+#test fn the_lexer_keeps_columns_and_one_spelling() -> i32 {
+    let l: Lexed = lex("Next == \\/ x' = x + 1 \\* comment\n        \\lor (* a (* nested *) one *) y # 2");
+    if (l.error.len != 0) { return 1; }
+    let t: &Token[] = &l.toks;
+    if (!str::eq(t[0].text, "Next") || !str::eq(t[1].text, "==") || !str::eq(t[2].text, "\\/")) { return 2; }
+    if (t[2].col != 9 || t[2].line != 1) { return 3; }
+    if (!str::eq(t[4].text, "'")) { return 4; }
+    // the second bullet, at the same column on line 2
+    if (!str::eq(t[9].text, "\\/") || t[9].col != 9 || t[9].line != 2) { return 5; }
+    if (!str::eq(t[11].text, "/=") || t[12].num != 2) { return 6; }
+    let m: Lexed = lex("---- MODULE M ----\n\"a\\\"b\" <<1, 2>> |-> \\in 12ab\n=====");
+    if (m.error.len != 0) { return 7; }
+    if (!str::eq(m.toks[0].text, "----") || !str::eq(m.toks[3].text, "----")) { return 8; }
+    if (m.toks[4].kind != Tk::Str || !str::eq(m.toks[4].text, "a\"b")) { return 9; }
+    if (!str::eq(m.toks[5].text, "<<") || !str::eq(m.toks[9].text, ">>")) { return 10; }
+    if (!str::eq(m.toks[10].text, "|->") || !str::eq(m.toks[11].text, "\\in")) { return 11; }
+    if (m.toks[12].kind != Tk::Ident || !str::eq(m.toks[13].text, "====")) { return 12; }
+    if (lex("(* open").error.len == 0) { return 13; }
+    return 0;
 }
