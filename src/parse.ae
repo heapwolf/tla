@@ -1,0 +1,258 @@
+// Parser for tla's subset of TLA+ (README.md). Fills `prog` (ast.ae) from a module's text,
+// resolving names as read, as SANY does: a name is used only after its definition, and a bound
+// name may not reuse one in scope. So any spec this parser accepts, SANY accepts too, and TLC
+// could check it.
+//
+// * Precedence follows TLA+'s table (Specifying Systems, 15.2.1), each range cut to one level.
+//   Where TLA+ calls two operators a conflict, so does this parser: /\ and \/ mixed without
+//   parentheses or bullets, and relation chains (a = b = c).
+// * A bullet list (a column of /\ or \/) fences its column: any token at or left of it ends the
+//   current item, as in SANY. Parentheses do not lift the fence.
+// * What the subset omits is an explicit error, never a silent skip: temporal formulas outside
+//   a SPECIFICATION, ENABLED, INSTANCE, LAMBDA, operators as arguments, user-defined infix
+//   operators, unbounded quantifiers and CHOOSE, recursive functions, and tuple binders.
+
+import fs from "std/fs";
+import { Tk, Token, Lexed, lex } from "lex.ae";
+import { Op, Node, Kind, Global, Prog, prog, sym, name, add, glob } from "ast.ae";
+import str from "std/string";
+
+// A name bound in an expression: a quantifier variable, a parameter, or a LET definition
+// (arity: -1 for a bound value, n >= 0 for a LET definition with n parameters).
+struct Bound {
+    sym: i64;
+    arity: i64;
+}
+
+struct Parser {
+    toks: Token[] = [];
+    i: i64 = 0;
+    fences: i64[] = [];                 // Columns of the bullet lists being read.
+    bound: Bound[] = [];
+    file: string = "";
+    dir: string = "";
+    excepts: i64 = 0;                   // EXCEPT values being read (where @ may appear).
+    spec_ok: bool = false;              // Temporal operators allowed (a SPECIFICATION).
+}
+
+let keywords: string[] = [
+    "MODULE", "EXTENDS", "CONSTANT", "CONSTANTS", "VARIABLE", "VARIABLES", "ASSUME", "ASSUMPTION",
+    "AXIOM", "THEOREM", "LEMMA", "LOCAL", "RECURSIVE", "INSTANCE", "WITH", "IF", "THEN", "ELSE",
+    "CASE", "OTHER", "LET", "IN", "EXCEPT", "CHOOSE", "SUBSET", "UNION", "DOMAIN", "UNCHANGED",
+    "ENABLED", "TRUE", "FALSE", "LAMBDA", "BOOLEAN", "STRING",
+];
+
+fn is_keyword(s: string) -> bool {
+    for (let k: string in &keywords) { if (str::eq(k, s)) { return true; } }
+    return false;
+}
+
+// An infix operator's precedence (0 if s is not one) and associativity (0 left, 1 right, 2 none).
+fn infix(s: string) -> (i64, i64) {
+    return match (s) {
+        "=>" => (1, 1),
+        "<=>" | "~>" => (2, 2),
+        "/\\" | "\\/" => (3, 0),
+        "=" | "/=" | "<" | ">" | "<=" | ">=" | "\\in" | "\\notin" | "\\subseteq" => (5, 2),
+        "@@" => (6, 0),
+        ":>" => (7, 2),
+        "\\cup" | "\\cap" => (8, 0),
+        "\\" => (8, 2),
+        ".." => (9, 2),
+        "+" | "-" => (10, 0),
+        "%" => (10, 2),
+        "\\X" => (10, 0),
+        "*" | "\\o" => (13, 0),
+        "\\div" => (13, 2),
+        "^" => (14, 2),
+        _ => (0, 0),
+    };
+}
+
+fn binop(s: string) -> Op {
+    return match (s) {
+        "=>" => Op::Implies,
+        "<=>" => Op::Equiv,
+        "~>" => Op::LeadsTo,
+        "=" => Op::Eq,
+        "/=" => Op::Neq,
+        "<" => Op::Lt,
+        ">" => Op::Gt,
+        "<=" => Op::Le,
+        ">=" => Op::Ge,
+        "\\in" => Op::In,
+        "\\notin" => Op::NotIn,
+        "\\subseteq" => Op::SubsetEq,
+        "@@" => Op::AtAt,
+        ":>" => Op::ColonGt,
+        "\\cup" => Op::Cup,
+        "\\cap" => Op::Cap,
+        "\\" => Op::SetMinus,
+        ".." => Op::Range,
+        "+" => Op::Plus,
+        "-" => Op::Minus,
+        "%" => Op::Mod,
+        "*" => Op::Times,
+        "\\o" => Op::Concat,
+        "\\div" => Op::Div,
+        _ => Op::Pow,
+    };
+}
+
+impl Parser {
+    // Whether the current token is hidden by a bullet list's fence (or is the end).
+    fn fenced(self: &Parser) -> bool {
+        let t: &Token = &self.toks[self.i];
+        if (t.kind == Tk::Eof) { return true; }
+        let n: i64 = self.fences.len;
+        return n > 0 && t.col <= self.fences[n - 1];
+    }
+
+    fn kind(self: &Parser) -> Tk {
+        if (self.fenced()) { return Tk::Eof; }
+        return self.toks[self.i].kind;
+    }
+
+    fn text(self: &Parser) -> string { return self.toks[self.i].text; }
+
+    fn at_op(self: &Parser, s: string) -> bool {
+        return self.kind() == Tk::Op && str::eq(self.toks[self.i].text, s);
+    }
+
+    fn at_kw(self: &Parser, s: string) -> bool {
+        return self.kind() == Tk::Ident && str::eq(self.toks[self.i].text, s);
+    }
+
+    // Whether the token after the current one is operator s (ignoring the fence).
+    fn then_op(self: &Parser, s: string) -> bool {
+        let t: &Token = &self.toks[self.i + 1];
+        return t.kind == Tk::Op && str::eq(t.text, s);
+    }
+
+    fn then_ident(self: &Parser, s: string) -> bool {
+        let t: &Token = &self.toks[self.i + 1];
+        return t.kind == Tk::Ident && str::eq(t.text, s);
+    }
+
+    fn skip(mut self: &Parser) -> void {
+        if (self.toks[self.i].kind != Tk::Eof) { self.i += 1; }
+    }
+
+    fn err(self: &Parser, msg: string) -> ParseError {
+        let t: &Token = &self.toks[self.i];
+        var seen: string = t.text;
+        if (t.kind == Tk::Eof) { seen = "the end"; }
+        return ParseError { msg: "\(self.file):\(t.line):\(t.col): \(msg) (at \(seen))" };
+    }
+
+    fn expect_op(mut self: &Parser, s: string) -> void | ParseError {
+        if (!self.at_op(s)) { fail self.err("expected \(s)"); }
+        self.skip();
+    }
+
+    fn expect_kw(mut self: &Parser, s: string) -> void | ParseError {
+        if (!self.at_kw(s)) { fail self.err("expected \(s)"); }
+        self.skip();
+    }
+
+    fn ident(mut self: &Parser) -> string | ParseError {
+        if (self.kind() != Tk::Ident || is_keyword(self.text())) { fail self.err("expected a name"); }
+        let s: string = self.text();
+        self.skip();
+        return s;
+    }
+
+    fn node(self: &Parser, op: Op) -> Node {
+        let t: &Token = &self.toks[self.i];
+        return Node { op: op, line: t.line, col: t.col };
+    }
+
+    // The innermost binding of name s, or -1.
+    fn find_bound(self: &Parser, s: i64) -> i64 {
+        var k: i64 = self.bound.len - 1;
+        while (k >= 0) {
+            if (self.bound[k].sym == s) { return k; }
+            k -= 1;
+        }
+        return -1;
+    }
+
+    // Binds s (arity as in Bound) unless the name is taken, which SANY also refuses.
+    fn bind(mut self: &Parser, s: i64, arity: i64) -> void | ParseError {
+        if (self.find_bound(s) >= 0 || prog.globals.has(s)) {
+            fail self.err("\(name(s)) is already defined: TLA+ does not let a name be bound again");
+        }
+        self.bound.push(Bound { sym: s, arity: arity });
+    }
+
+    fn unbind(mut self: &Parser, n: i64) -> void {
+        for (let k: i64 in 0..n) { self.bound.pop(); }
+    }
+
+    fn need_std(self: &Parser, op: string) -> void | ParseError {
+        let m: string = std_of(op);
+        if (m.len > 0 && !has_std(m)) { fail self.err("\(op) needs EXTENDS \(m)"); }
+    }
+
+    // ---- Expressions ----
+
+    fn expr(mut self: &Parser, min: i64) -> i64 | ParseError {
+        var left: i64 = self.prefix()?;
+        var junction: string = "";          // The first /\ or \/ at this level.
+        var last_none: i64 = 0;             // The last non-associative level applied.
+        var cross: bool = false;            // left is an \X this loop made.
+        while (self.kind() == Tk::Op) {
+            let t: string = self.text();
+            if (str::eq(t, "'") && min <= 15) {
+                let nd: &Node = &prog.nodes[left];
+                var ok: bool = nd.op == Op::Global;
+                if (ok) { ok = glob(nd.sym).kind == Kind::Var; }
+                if (!ok) { fail self.err("the subset primes only variables"); }
+                var p: Node = self.node(Op::Prime);
+                p.a = left;
+                self.skip();
+                left = add(p);
+                continue;
+            }
+            if (str::eq(t, "[") && min <= 16) {
+                var app: Node = self.node(Op::FnApp);
+                self.skip();
+                app.a = left;
+                app.kids.push(self.expr(0)?);
+                while (self.at_op(",")) {
+                    self.skip();
+                    app.kids.push(self.expr(0)?);
+                }
+                self.expect_op("]")?;
+            }
+        }
+    }
+}
+
+// Parses src (from file, in directory dir) into prog.
+fn parse_into(src: string, file: string, dir: string) -> void | ParseError {
+    let l: Lexed = lex(src);
+    if (l.error.len > 0) { fail ParseError { msg: "\(file):\(l.error)" }; }
+    var p: Parser = Parser { toks: std::copy(l.toks), file: file, dir: dir };
+    p.module()?;
+}
+
+/// Parses the module in file (text: src) into prog, which starts empty.
+export fn parse(src: string, file: string) -> void | ParseError {
+    prog = Prog {};
+    prog.globals.put(sym("BOOLEAN"), Global { kind: Kind::Builtin, index: 0 });
+    prog.globals.put(sym("STRING"), Global { kind: Kind::Builtin, index: 0 });
+    prog.at = sym("@");
+    var dir: string = "";
+    var k: i64 = file.len - 1;
+    while (k >= 0 && file[k] != '/') { k -= 1; }
+    if (k > 0) { dir = file[0..k]; }
+    var base: string = file[k + 1..];
+    if (base.len > 4 && str::eq(base[base.len - 4..], ".tla")) { base = base[0..base.len - 4]; }
+    prog.module = base;
+    let l: Lexed = lex(src);
+    if (l.error.len > 0) { fail ParseError { msg: "\(file):\(l.error)" }; }
+    var p: Parser = Parser { toks: std::copy(l.toks), file: file, dir: dir };
+    let m: string = p.module()?;
+    if (!str::eq(m, base)) { fail ParseError { msg: "\(file): the module is named \(m), not \(base)" }; }
+}
