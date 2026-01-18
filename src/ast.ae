@@ -1,0 +1,145 @@
+// The parsed spec: expressions as nodes in one array, names as symbol numbers, plus the module's
+// definitions, constants and variables. parse.ae fills it; eval.ae only reads it. It is one
+// global, `prog`, since a run checks one spec.
+
+import { Map } from "std/containers";
+
+/// A node's kind. Comments list the fields each kind uses.
+export enum Op {
+    Num,            // num
+    Str,            // str
+    Bool,           // num: 1 for TRUE
+    Local,          // sym: a bound name, parameter, or parameterless LET definition
+    Global,         // sym: a module definition, constant or variable, or a builtin
+    Call,           // sym, kids: arguments; num 1 if sym is a LET definition
+    Prime,          // a: a Global naming a variable
+    Not,            // a
+    Neg,            // a
+    Powerset,       // a: SUBSET a
+    BigUnion,       // a: UNION a
+    Domain,         // a
+    Unchanged,      // a: a variable, or a tuple of them
+    And,            // kids
+    Or,             // kids
+    Implies,        // a, b
+    Equiv,          // a, b
+    Eq,             // a, b
+    Neq,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    In,
+    NotIn,
+    SubsetEq,
+    Cup,
+    Cap,
+    SetMinus,
+    Range,          // a..b
+    Plus,
+    Minus,
+    Times,
+    Div,
+    Mod,
+    Pow,
+    Concat,         // a \o b
+    ColonGt,        // a :> b
+    AtAt,           // a @@ b
+    Cross,          // kids: kids[0] \X kids[1] \X ...
+    FnApp,          // a: the function, kids: the arguments (two or more make a tuple)
+    Dot,            // a: the record, str: the field
+    SetEnum,        // kids
+    Tuple,          // kids
+    SetFilter,      // syms[0] bound in a, b: the condition
+    SetMap,         // a: the element, syms bound in kids
+    Forall,         // syms bound in kids, b: the body
+    Exists,
+    Choose,         // syms[0] bound in a, b: the condition
+    FnCons,         // syms bound in kids, b: the value
+    FnSet,          // [a -> b]
+    RecCons,        // strs: the fields, kids: their values
+    RecSet,         // strs: the fields, kids: their sets
+    Except,         // a: the function, kids: ExceptItems
+    ExceptItem,     // kids: the path (a Str node for .f, any other node for [e]), b: the value
+    At,             // @ in an EXCEPT's value
+    If,             // a, b, c
+    Case,           // kids: CaseArms, c: OTHER (-1 if none)
+    CaseArm,        // a: the guard, b: the value
+    Let,            // kids: LetDefs, b: the body
+    LetDef,         // sym, syms: the parameters, b: the body
+    Box,            // [] a (only in a SPECIFICATION)
+    ActSub,         // [a]_b (only in a SPECIFICATION)
+    Fair,           // WF_b(a) or SF_b(a) (only in a SPECIFICATION): num 1 for SF
+    Diamond,        // <> a (only in a PROPERTY or SPECIFICATION definition)
+    LeadsTo,        // a ~> b (likewise)
+}
+
+/// An expression.
+export struct Node {
+    export op: Op;
+    export a: i64 = -1;
+    export b: i64 = -1;
+    export c: i64 = -1;
+    export kids: i64[] = [];
+    export syms: i64[] = [];
+    export strs: string[] = [];
+    export sym: i64 = -1;
+    export num: i64 = 0;
+    export str: string = "";
+    export line: i64 = 0;
+    export col: i64 = 0;
+}
+
+/// A module-level name's kind (Missing: not one).
+export enum Kind { Def, Const, Var, Builtin, Missing }
+
+/// A module-level name.
+export struct Global {
+    export kind: Kind;
+    export params: i64[] = [];      // A definition's parameters (symbols).
+    export body: i64 = -1;          // A definition's body.
+    export index: i64 = -1;         // A variable's index in a state, or a constant's.
+    export line: i64 = 0;
+    export file: string = "";
+}
+
+/// The parsed spec and its names.
+export struct Prog {
+    export nodes: Node[] = [];
+    export names: string[] = [];            // A symbol's name.
+    symbols: Map(string, i64) = Map {};
+    export globals: Map(i64, Global) = Map {};
+    export vars: i64[] = [];                // Variables in declaration order (symbols).
+    export consts: i64[] = [];              // Constants (symbols).
+    export assumes: i64[] = [];
+    export module: string = "";
+    export std: string[] = [];              // Standard modules extended: Naturals, ...
+    export at: i64 = -1;                    // The symbol of @.
+}
+
+export var prog: Prog = Prog {};
+
+/// name's symbol, created if new.
+export fn sym(name: string) -> i64 {
+    if (let s = prog.symbols.get(name)) { return s; }
+    prog.names.push(std::copy(name));
+    let s: i64 = prog.names.len - 1;
+    prog.symbols.put(std::copy(name), s);
+    return s;
+}
+
+/// Symbol s's name.
+export fn name(s: i64) -> string { return prog.names[s]; }
+
+/// The module-level name s, or one of kind Missing. (Not `prog.globals.get(s) ?? Global {...}`:
+/// aec currently leaks the default on every call with that form.)
+export fn glob(s: i64) -> Global {
+    if (let g = prog.globals.get(s)) { return std::copy(g); }
+    return Global { kind: Kind::Missing };
+}
+
+/// Adds n and returns its number.
+export fn add(n: Node) -> i64 {
+    prog.nodes.push(n);
+    return prog.nodes.len - 1;
+}
