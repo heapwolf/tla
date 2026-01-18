@@ -224,6 +224,131 @@ impl Parser {
                     app.kids.push(self.expr(0)?);
                 }
                 self.expect_op("]")?;
+                left = add(app);
+                continue;
+            }
+            if (str::eq(t, ".") && min <= 17) {
+                var d: Node = self.node(Op::Dot);
+                self.skip();
+                d.a = left;
+                if (self.kind() != Tk::Ident) { fail self.err("expected a field name"); }
+                d.str = self.text();
+                self.skip();
+                left = add(d);
+                continue;
+            }
+            let (p, assoc) = infix(t);
+            if (p == 0 || p < min) { break; }
+            if (str::eq(t, "~>") && !self.spec_ok) { fail self.err("~> is a temporal formula: checked only as a PROPERTY"); }
+            if (assoc == 2 && p == last_none) { fail self.err("\(t) cannot follow an operator of its level without parentheses"); }
+            self.need_std(t)?;
+            if (str::eq(t, "/\\") || str::eq(t, "\\/")) {
+                if (junction.len > 0 && !str::eq(junction, t)) {
+                    fail self.err("/\\ and \\/ mixed without parentheses or bullets");
+                }
+                let first: bool = junction.len == 0;
+                junction = t;
+                let op: Op = match (t) { "/\\" => Op::And, _ => Op::Or };
+                self.skip();
+                let r: i64 = self.expr(p + 1)?;
+                if (first) {
+                    var j: Node = self.node(op);
+                    j.kids.push(left);
+                    j.kids.push(r);
+                    left = add(j);
+                } else {
+                    prog.nodes[left].kids.push(r);
+                }
+                continue;
+            }
+            if (str::eq(t, "\\X")) {
+                self.skip();
+                let r: i64 = self.expr(p + 1)?;
+                if (cross) {
+                    prog.nodes[left].kids.push(r);
+                } else {
+                    var x: Node = self.node(Op::Cross);
+                    x.kids.push(left);
+                    x.kids.push(r);
+                    left = add(x);
+                    cross = true;
+                }
+                continue;
+            }
+            var b: Node = self.node(binop(t));
+            self.skip();
+            b.a = left;
+            if (assoc == 1) {
+                b.b = self.expr(p)?;
+            } else {
+                b.b = self.expr(p + 1)?;
+            }
+            left = add(b);
+            cross = false;
+            if (assoc == 2) { last_none = p; }
+        }
+        return left;
+    }
+
+    fn unary(mut self: &Parser, op: Op, min: i64) -> i64 | ParseError {
+        var n: Node = self.node(op);
+        self.skip();
+        n.a = self.expr(min)?;
+        return add(n);
+    }
+
+    fn prefix(mut self: &Parser) -> i64 | ParseError {
+        let k: Tk = self.kind();
+        if (k == Tk::Eof) { fail self.err("expected an expression"); }
+        if (k == Tk::Num) {
+            var n: Node = self.node(Op::Num);
+            n.num = self.toks[self.i].num;
+            self.skip();
+            return add(n);
+        }
+        if (k == Tk::Str) {
+            var n: Node = self.node(Op::Str);
+            n.str = self.text();
+            self.skip();
+            return add(n);
+        }
+        if (k == Tk::Ident) { return self.word(); }
+        let t: string = self.text();
+        match (t) {
+            "(" => {
+                self.skip();
+                let e: i64 = self.expr(0)?;
+                self.expect_op(")")?;
+                return e;
+            },
+            "<<" => {
+                var n: Node = self.node(Op::Tuple);
+                self.skip();
+                if (!self.at_op(">>")) {
+                    n.kids.push(self.expr(0)?);
+                    while (self.at_op(",")) {
+                        self.skip();
+                        n.kids.push(self.expr(0)?);
+                    }
+                }
+                self.expect_op(">>")?;
+                return add(n);
+            },
+            "{" => { return self.braces(); },
+            "[" => { return self.brackets(); },
+            "~" => { return self.unary(Op::Not, 4); },
+            "-" => {
+                if (!has_std("Integers")) { fail self.err("unary - needs EXTENDS Integers"); }
+                return self.unary(Op::Neg, 12);
+            },
+            "/\\" | "\\/" => { return self.bullets(); },
+            "\\A" | "\\E" => { return self.quantifier(); },
+            "@" => {
+                if (self.excepts == 0) { fail self.err("@ outside an EXCEPT"); }
+                let n: Node = self.node(Op::At);
+                self.skip();
+                return add(n);
+                }
             }
         }
     }
