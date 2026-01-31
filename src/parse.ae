@@ -348,6 +348,90 @@ impl Parser {
                 let n: Node = self.node(Op::At);
                 self.skip();
                 return add(n);
+            },
+            "[]" => {
+                if (!self.spec_ok) { fail self.err("temporal formulas are checked only as a SPECIFICATION's Init /\\ [][Next]_vars"); }
+                return self.unary(Op::Box, 4);
+            },
+            "<>" => {
+                if (!self.spec_ok) { fail self.err("temporal formulas are checked only as a SPECIFICATION or a PROPERTY"); }
+                return self.unary(Op::Diamond, 4);
+            },
+            _ => {},
+        }
+        fail self.err("the subset has no expression that starts here");
+    }
+
+    // A word: a keyword's construct, a literal, or a name.
+    fn word(mut self: &Parser) -> i64 | ParseError {
+        let w: string = self.text();
+        match (w) {
+            "TRUE" | "FALSE" => {
+                var n: Node = self.node(Op::Bool);
+                if (str::eq(w, "TRUE")) { n.num = 1; }
+                self.skip();
+                return add(n);
+            },
+            "IF" => {
+                var n: Node = self.node(Op::If);
+                self.skip();
+                n.a = self.expr(0)?;
+                self.expect_kw("THEN")?;
+                n.b = self.expr(0)?;
+                self.expect_kw("ELSE")?;
+                n.c = self.expr(0)?;
+                return add(n);
+            },
+            "CASE" => { return self.case_of(); },
+            "LET" => { return self.let_in(); },
+            "CHOOSE" => {
+                var n: Node = self.node(Op::Choose);
+                self.skip();
+                let x: i64 = sym(self.ident()?);
+                if (!self.at_op("\\in")) { fail self.err("the subset needs CHOOSE x \\in S"); }
+                self.skip();
+                n.a = self.expr(0)?;
+                self.expect_op(":")?;
+                self.bind(x, -1)?;
+                n.b = self.expr(0)?;
+                self.unbind(1);
+                n.syms.push(x);
+                return add(n);
+            },
+            "SUBSET" => { return self.unary(Op::Powerset, 9); },
+            "UNION" => { return self.unary(Op::BigUnion, 9); },
+            "DOMAIN" => { return self.unary(Op::Domain, 10); },
+            "UNCHANGED" => { return self.unary(Op::Unchanged, 5); },
+            "ENABLED" | "LAMBDA" | "INSTANCE" => { fail self.err("the subset has no \(w)"); },
+            _ => {},
+        }
+        if (is_keyword(w) && !str::eq(w, "BOOLEAN") && !str::eq(w, "STRING")) {
+            fail self.err("\(w) cannot start an expression");
+        }
+        // WF_vars(A) and SF_vars(A): fairness, which a safety check may ignore
+        if (w.len > 3 && (str::eq(w[0..3], "WF_") || str::eq(w[0..3], "SF_"))) {
+            if (!self.spec_ok) { fail self.err("fairness is read only in a SPECIFICATION"); }
+            var n: Node = self.node(Op::Fair);
+            if (str::eq(w[0..3], "SF_")) { n.num = 1; }
+            self.skip();
+            self.expect_op("(")?;
+            n.a = self.expr(0)?;
+            self.expect_op(")")?;
+            return add(n);
+        }
+        let s: i64 = sym(w);
+        var n: Node = self.node(Op::Global);
+        n.sym = s;
+        self.skip();
+        if (self.at_op("!")) { fail self.err("the subset has no instances (M!Op)"); }
+        let b: i64 = self.find_bound(s);
+        var arity: i64 = -1;
+        if (b >= 0) {
+            n.op = Op::Local;
+            arity = self.bound[b].arity;
+        } else {
+            if (!prog.globals.has(s)) {
+                fail self.err("unknown name \(w): a name must be defined before it is used");
                 }
             }
         }
