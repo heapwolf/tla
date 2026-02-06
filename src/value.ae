@@ -1,0 +1,136 @@
+// TLA+ values. Every value is interned once and named by an i64 id. So values are equal exactly
+// when their ids are, a set is its elements' sorted ids (one canonical form), and a state is an
+// array of ids.
+//
+// * An id with the low bit set is an integer, n << 1 | 1, for |n| < 2^61. Arithmetic beyond that
+//   is an error (TLC stops at 2^31).
+// * Other ids are 2 * k, k a table index: a boolean, string, model value (a cfg constant's
+//   value), set, or function. Records, tuples and sequences are functions, as in TLA+:
+//   [a |-> 1] is the function on {"a"}, <<x, y>> the one on 1..2. So <<>> = [x \in {} |-> 0]
+//   holds, as it must.
+// * Some sets stay unexpanded: Nat, Int, STRING, SUBSET S, [S -> T], [a : S] and Seq(S).
+//   Membership needs no expansion. Anything else (equality, enumeration, storing in a state)
+//   expands finite ones and is an error for infinite ones.
+// * Sorting by id is a total order, used for canonical sets. Printing sorts by value instead
+//   (cmp), so 1..3 prints as {1, 2, 3}.
+
+import { Map } from "std/containers";
+import str from "std/string";
+
+/// An evaluation error: the spec is wrong or outside the subset.
+export failure EvalError { msg: string; }
+
+/// A table entry's kind.
+export enum Tag { Bool, Str, Model, Set, Func, Nat, Int, Strings, Pow, FnSet, RecSet, SeqSet }
+
+/// A value in the table.
+export struct VNode {
+    export tag: Tag;
+    export num: i64 = 0;            // A boolean's 0 or 1.
+    export s: string = "";          // A string's or model value's text.
+    export xs: i64[] = [];          // A set's elements, a function's domain, a record set's fields.
+    export ys: i64[] = [];          // A function's values, a record set's sets.
+    export a: i64 = 0;              // SUBSET a, [a -> b], Seq(a).
+    export b: i64 = 0;
+}
+
+/// The table of values.
+export struct Values {
+    export nodes: VNode[] = [];
+    slots: i64[] = [];              // Open-addressed index: 0 empty, k + 1 for nodes[k].
+    count: i64 = 0;
+}
+
+export var vt: Values = Values {};
+
+export let FALSE: i64 = 0;
+export let TRUE: i64 = 2;
+let max_int: i64 = 2305843009213693951;    // 2^61 - 1
+
+fn node_hash(n: &VNode) -> i64 {
+    var h: i64 = (n.tag as i64) *% 0x9E3779B97F4A7C15;
+    h = (h ^ n.num) *% 0x100000001B3;
+    h = (h ^ std::hash(&n.s)) *% 0x100000001B3;
+    h = (h ^ std::hash(&n.xs)) *% 0x100000001B3;
+    h = (h ^ std::hash(&n.ys)) *% 0x100000001B3;
+    h = (h ^ n.a) *% 0x100000001B3;
+    h = (h ^ n.b) *% 0x100000001B3;
+    return h;
+}
+
+fn same(x: &VNode, y: &VNode) -> bool {
+    return x.tag == y.tag && x.num == y.num && x.a == y.a && x.b == y.b && str::eq(x.s, y.s)
+        && std::equal(&x.xs, &y.xs) && std::equal(&x.ys, &y.ys);
+}
+
+fn grow() -> void {
+    var cap: i64 = vt.slots.len * 2;
+    if (cap == 0) { cap = 1024; }
+    rehash(cap);
+}
+
+// Rebuilds the index with cap slots (a power of two, room for every node).
+fn rehash(cap: i64) -> void {
+    var slots: i64[cap];
+    for (let k: i64 in 0..vt.nodes.len) {
+        var s: i64 = (node_hash(&vt.nodes[k]) >> 3) & (cap - 1);
+        while (slots[s] != 0) { s = (s + 1) & (cap - 1); }
+        slots[s] = k + 1;
+    }
+    vt.slots = slots;
+}
+
+/// n's id, interned if new.
+export fn intern(n: VNode) -> i64 {
+    if ((vt.count + 1) * 4 > vt.slots.len * 3) { grow(); }
+    let mask: i64 = vt.slots.len - 1;
+    var s: i64 = (node_hash(&n) >> 3) & mask;
+    while (vt.slots[s] != 0) {
+        let k: i64 = vt.slots[s] - 1;
+        if (same(&vt.nodes[k], &n)) { return k * 2; }
+        s = (s + 1) & mask;
+    }
+    vt.nodes.push(n);
+    vt.count += 1;
+    vt.slots[s] = vt.nodes.len;
+    return (vt.nodes.len - 1) * 2;
+}
+
+/// Empties the table, then makes FALSE and TRUE (ids 0 and 2).
+export fn reset() -> void {
+    vt = Values {};
+    intern(VNode { tag: Tag::Bool, num: 0 });
+    intern(VNode { tag: Tag::Bool, num: 1 });
+}
+
+export fn is_int(v: i64) -> bool { return (v & 1) == 1; }
+export fn int_of(v: i64) -> i64 { return v >> 1; }
+
+export fn mk_int(n: i64) -> i64 | EvalError {
+    if (n > max_int || n < -max_int) { fail EvalError { msg: "an integer past 2^61: \(n)" }; }
+    return (n << 1) | 1;
+}
+
+// For small integers known to fit (indexes, lengths).
+export fn small(n: i64) -> i64 { return (n << 1) | 1; }
+
+export fn mk_bool(b: bool) -> i64 {
+    if (b) { return TRUE; }
+    return FALSE;
+}
+
+export fn mk_str(s: string) -> i64 { return intern(VNode { tag: Tag::Str, s: s }); }
+export fn mk_model(s: string) -> i64 { return intern(VNode { tag: Tag::Model, s: s }); }
+
+/// v's tag (integers have none: check is_int first).
+export fn tag(v: i64) -> Tag { return vt.nodes[v >> 1].tag; }
+
+export fn is_tag(v: i64, t: Tag) -> bool { return !is_int(v) && vt.nodes[v >> 1].tag == t; }
+
+/// A copy of v's xs (a set's elements, a function's domain).
+export fn xs(v: i64) -> i64[] { return std::copy(vt.nodes[v >> 1].xs); }
+
+/// A copy of v's ys (a function's values).
+export fn ys(v: i64) -> i64[] { return std::copy(vt.nodes[v >> 1].ys); }
+
+export fn size(v: i64) -> i64 { return vt.nodes[v >> 1].xs.len; }
