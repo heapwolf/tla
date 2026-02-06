@@ -134,3 +134,226 @@ export fn xs(v: i64) -> i64[] { return std::copy(vt.nodes[v >> 1].xs); }
 export fn ys(v: i64) -> i64[] { return std::copy(vt.nodes[v >> 1].ys); }
 
 export fn size(v: i64) -> i64 { return vt.nodes[v >> 1].xs.len; }
+
+// Sorts ids in place (merge sort: std has no sort), keeping duplicates.
+fn sort_ids(mut a: &i64[]) -> void {
+    let n: i64 = a.len;
+    if (n < 2) { return; }
+    var sorted: bool = true;
+    for (let i: i64 in 1..n) {
+        if (a[i - 1] > a[i]) {
+            sorted = false;
+            break;
+        }
+    }
+    if (sorted) { return; }
+    var tmp: i64[n];
+    var width: i64 = 1;
+    while (width < n) {
+        var lo: i64 = 0;
+        while (lo < n) {
+            var mid: i64 = lo + width;
+            if (mid > n) { mid = n; }
+            var hi: i64 = lo + 2 * width;
+            if (hi > n) { hi = n; }
+            var i: i64 = lo;
+            var j: i64 = mid;
+            var k: i64 = lo;
+            while (i < mid && j < hi) {
+                if (a[i] <= a[j]) {
+                    tmp[k] = a[i];
+                    i += 1;
+                } else {
+                    tmp[k] = a[j];
+                    j += 1;
+                }
+                k += 1;
+            }
+            while (i < mid) {
+                tmp[k] = a[i];
+                i += 1;
+                k += 1;
+            }
+            while (j < hi) {
+                tmp[k] = a[j];
+                j += 1;
+                k += 1;
+            }
+            lo = hi;
+        }
+        for (let t: i64 in 0..n) { a[t] = tmp[t]; }
+        width *= 2;
+    }
+}
+
+/// The set of elems (any order, repeats allowed).
+export fn mk_set(mut elems: i64[]) -> i64 {
+    sort_ids(mut &elems);
+    var out: i64[] = [];
+    for (let i: i64 in 0..elems.len) {
+        if (i == 0 || elems[i] != elems[i - 1]) { out.push(elems[i]); }
+    }
+    return intern(VNode { tag: Tag::Set, xs: out });
+}
+
+/// The set of elems, already sorted by id, no repeats.
+export fn mk_set_sorted(elems: i64[]) -> i64 { return intern(VNode { tag: Tag::Set, xs: elems }); }
+
+/// The function from dom (sorted by id, no repeats) to rng (rng[i] for dom[i]).
+export fn mk_func_sorted(dom: i64[], rng: i64[]) -> i64 {
+    return intern(VNode { tag: Tag::Func, xs: dom, ys: rng });
+}
+
+/// The function from dom to rng, any order; a repeated key is an error.
+export fn mk_func(dom: &i64[], rng: &i64[]) -> i64 | EvalError {
+    let n: i64 = dom.len;
+    var idx: i64[] = [];
+    for (let i: i64 in 0..n) { idx.push(i); }
+    // Insertion-sort positions by key: domains are small.
+    for (let i: i64 in 1..n) {
+        var j: i64 = i;
+        while (j > 0 && dom[idx[j - 1]] > dom[idx[j]]) {
+            let t: i64 = idx[j];
+            idx[j] = idx[j - 1];
+            idx[j - 1] = t;
+            j -= 1;
+        }
+    }
+    var d: i64[] = [];
+    var r: i64[] = [];
+    for (let i: i64 in 0..n) {
+        if (i > 0 && dom[idx[i]] == dom[idx[i - 1]]) {
+            fail EvalError { msg: "a function with the key \(show(dom[idx[i]])) twice" };
+        }
+        d.push(dom[idx[i]]);
+        r.push(rng[idx[i]]);
+    }
+    return mk_func_sorted(d, r);
+}
+
+/// The tuple (sequence) <<xs[0], xs[1], ...>>.
+export fn mk_tuple(vals: i64[]) -> i64 {
+    var d: i64[] = [];
+    for (let i: i64 in 0..vals.len) { d.push(small(i + 1)); }
+    return mk_func_sorted(d, vals);
+}
+
+/// The record [names[0] |-> vals[0], ...].
+export fn mk_rec(names: &string[], vals: &i64[]) -> i64 | EvalError {
+    var d: i64[] = [];
+    for (let s: string in names) { d.push(mk_str(s)); }
+    return mk_func(&d, vals);
+}
+
+/// Whether v is a set (expanded or not).
+export fn is_set(v: i64) -> bool {
+    if (is_int(v)) { return false; }
+    return match (tag(v)) {
+        Tag::Set | Tag::Nat | Tag::Int | Tag::Strings | Tag::Pow | Tag::FnSet | Tag::RecSet | Tag::SeqSet => true,
+        _ => false,
+    };
+}
+
+// key's position in the sorted ids, or -1.
+export fn find(ids: &i64[], key: i64) -> i64 {
+    var lo: i64 = 0;
+    var hi: i64 = ids.len;
+    while (lo < hi) {
+        let mid: i64 = (lo + hi) / 2;
+        if (ids[mid] < key) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if (lo < ids.len && ids[lo] == key) { return lo; }
+    return -1;
+}
+
+/// Whether v's domain is 1..n: a sequence (or the empty function).
+export fn is_seq(v: i64) -> bool {
+    if (!is_tag(v, Tag::Func)) { return false; }
+    let d: &i64[] = &vt.nodes[v >> 1].xs;
+    for (let i: i64 in 0..d.len) {
+        if (d[i] != small(i + 1)) { return false; }
+    }
+    return true;
+}
+
+/// f[x].
+export fn apply(f: i64, x: i64) -> i64 | EvalError {
+    if (!is_tag(f, Tag::Func)) { fail EvalError { msg: "applying \(show(f)), which is not a function" }; }
+    let k: i64 = find(&vt.nodes[f >> 1].xs, x);
+    if (k < 0) { fail EvalError { msg: "\(show(x)) is not in the domain of \(show(f))" }; }
+    return vt.nodes[f >> 1].ys[k];
+}
+
+/// f[x], or none if x is outside f's domain (f must be a function).
+export fn lookup(f: i64, x: i64) -> i64? {
+    let k: i64 = find(&vt.nodes[f >> 1].xs, x);
+    if (k < 0) { return none; }
+    return vt.nodes[f >> 1].ys[k];
+}
+
+/// f with f[x] = v. If x is outside f's domain, f itself (as in TLA+).
+export fn update(f: i64, x: i64, v: i64) -> i64 | EvalError {
+    if (!is_tag(f, Tag::Func)) { fail EvalError { msg: "EXCEPT on \(show(f)), which is not a function" }; }
+    let k: i64 = find(&vt.nodes[f >> 1].xs, x);
+    if (k < 0) { return f; }
+    if (vt.nodes[f >> 1].ys[k] == v) { return f; }
+    var r: i64[] = ys(f);
+    r[k] = v;
+    return mk_func_sorted(xs(f), r);
+}
+
+/// x \in s.
+export fn member(x: i64, s: i64) -> bool | EvalError {
+    if (is_int(s)) { fail EvalError { msg: "\\in \(show(s)), which is not a set" }; }
+    match (tag(s)) {
+        Tag::Set => { return find(&vt.nodes[s >> 1].xs, x) >= 0; },
+        Tag::Nat => { return is_int(x) && int_of(x) >= 0; },
+        Tag::Int => { return is_int(x); },
+        Tag::Strings => { return is_tag(x, Tag::Str); },
+        Tag::Pow => {
+            if (!is_set(x)) { return false; }
+            let ex: i64 = expand(x)?;
+            let base: i64 = vt.nodes[s >> 1].a;
+            for (let e: i64 in xs(ex)) {
+                if (!member(e, base)?) { return false; }
+            }
+            return true;
+        },
+        Tag::FnSet => {
+            if (!is_tag(x, Tag::Func)) { return false; }
+            let dom: i64 = expand(vt.nodes[s >> 1].a)?;
+            let rng: i64 = vt.nodes[s >> 1].b;
+            if (!std::equal(&vt.nodes[x >> 1].xs, &vt.nodes[dom >> 1].xs)) { return false; }
+            for (let e: i64 in ys(x)) {
+                if (!member(e, rng)?) { return false; }
+            }
+            return true;
+        },
+        Tag::RecSet => {
+            if (!is_tag(x, Tag::Func)) { return false; }
+            if (!std::equal(&vt.nodes[x >> 1].xs, &vt.nodes[s >> 1].xs)) { return false; }
+            let sets: i64[] = ys(s);
+            let vals: i64[] = ys(x);
+            for (let i: i64 in 0..vals.len) {
+                if (!member(vals[i], sets[i])?) { return false; }
+            }
+            return true;
+        },
+        Tag::SeqSet => {
+            if (!is_seq(x)) { return false; }
+            let base: i64 = vt.nodes[s >> 1].a;
+            for (let e: i64 in ys(x)) {
+                if (!member(e, base)?) { return false; }
+            }
+            return true;
+        },
+        _ => { fail EvalError { msg: "\\in \(show(s)), which is not a set" }; },
+    }
+}
+
+/// s's elements, for enumeration.
+export fn elements(s: i64) -> i64[] | EvalError { return xs(expand(s)?); }
