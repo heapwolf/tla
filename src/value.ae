@@ -357,3 +357,140 @@ export fn member(x: i64, s: i64) -> bool | EvalError {
 
 /// s's elements, for enumeration.
 export fn elements(s: i64) -> i64[] | EvalError { return xs(expand(s)?); }
+
+// A rank per kind, for a stable print order.
+fn rank(v: i64) -> i64 {
+    if (is_int(v)) { return 1; }
+    return match (tag(v)) {
+        Tag::Bool => 0,
+        Tag::Str => 2,
+        Tag::Model => 3,
+        Tag::Func => 5,
+        _ => 4,
+    };
+}
+
+/// Compares a and b by value: integers by number, strings by text, sets and functions element-wise.
+/// Only for printing.
+export fn cmp(a: i64, b: i64) -> i64 {
+    if (a == b) { return 0; }
+    let ra: i64 = rank(a);
+    let rb: i64 = rank(b);
+    if (ra != rb) { return ra - rb; }
+    if (is_int(a)) {
+        if (int_of(a) < int_of(b)) { return -1; }
+        return 1;
+    }
+    let x: &VNode = &vt.nodes[a >> 1];
+    let y: &VNode = &vt.nodes[b >> 1];
+    if (x.tag != y.tag) { return (x.tag as i64) - (y.tag as i64); }
+    match (x.tag) {
+        Tag::Bool => { return x.num - y.num; },
+        Tag::Str | Tag::Model => { return str::cmp(x.s, y.s); },
+        _ => {},
+    }
+    let xa: i64[] = sorted(&x.xs);
+    let ya: i64[] = sorted(&y.xs);
+    for (let i: i64 in 0..xa.len) {
+        if (i >= ya.len) { return 1; }
+        let c: i64 = cmp(xa[i], ya[i]);
+        if (c != 0) { return c; }
+    }
+    if (xa.len < ya.len) { return -1; }
+    if (x.tag == Tag::Func) {
+        for (let i: i64 in 0..x.ys.len) {
+            let c: i64 = cmp(lookup(a, xa[i]) ?? 0, lookup(b, xa[i]) ?? 0);
+            if (c != 0) { return c; }
+        }
+    }
+    return 0;
+}
+
+// ids sorted by value (insertion sort: for printing).
+fn sorted(ids: &i64[]) -> i64[] {
+    var a: i64[] = std::copy(*ids);
+    for (let i: i64 in 1..a.len) {
+        var j: i64 = i;
+        while (j > 0 && cmp(a[j - 1], a[j]) > 0) {
+            let t: i64 = a[j];
+            a[j] = a[j - 1];
+            a[j - 1] = t;
+            j -= 1;
+        }
+    }
+    return a;
+}
+
+fn quote(s: string) -> string {
+    var out: string = "\"";
+    for (let c: u8 in s) {
+        let e: string = match (c) {
+            '"' => "\\\"",
+            '\\' => "\\\\",
+            '\n' => "\\n",
+            '\t' => "\\t",
+            _ => "",
+        };
+        if (e.len > 0) {
+            out = "\(out)\(e)";
+        } else {
+            out = "\(out)\(substr_byte(c))";
+        }
+    }
+    return "\(out)\"";
+}
+
+fn substr_byte(c: u8) -> string {
+    let one: u8[] = [c];
+    return str::from_bytes(one);
+}
+
+fn join(parts: &string[], sep: string) -> string {
+    var out: string = "";
+    for (let i: i64, let p: string in parts) {
+        if (i > 0) { out = "\(out)\(sep)"; }
+        out = "\(out)\(p)";
+    }
+    return out;
+}
+
+/// v in TLA+ notation, as TLC prints it.
+export fn show(v: i64) -> string {
+    if (is_int(v)) { return "\(int_of(v))"; }
+    let t: Tag = tag(v);
+    match (t) {
+        Tag::Bool => {
+            if (v == TRUE) { return "TRUE"; }
+            return "FALSE";
+        },
+        Tag::Str => { return quote(vt.nodes[v >> 1].s); },
+        Tag::Model => { return vt.nodes[v >> 1].s; },
+        Tag::Nat => { return "Nat"; },
+        Tag::Int => { return "Int"; },
+        Tag::Strings => { return "STRING"; },
+        Tag::Pow => { return "SUBSET \(show(vt.nodes[v >> 1].a))"; },
+        Tag::SeqSet => { return "Seq(\(show(vt.nodes[v >> 1].a)))"; },
+        Tag::FnSet => { return "[\(show(vt.nodes[v >> 1].a)) -> \(show(vt.nodes[v >> 1].b))]"; },
+        Tag::RecSet => {
+            var parts: string[] = [];
+            let d: i64[] = xs(v);
+            let r: i64[] = ys(v);
+            for (let i: i64 in 0..d.len) { parts.push("\(vt.nodes[d[i] >> 1].s) : \(show(r[i]))"); }
+            return "[\(join(&parts, ", "))]";
+        },
+        Tag::Set => {
+            var parts: string[] = [];
+            for (let e: i64 in sorted(&vt.nodes[v >> 1].xs)) { parts.push(show(e)); }
+            return "{\(join(&parts, ", "))}";
+        },
+        Tag::Func => {
+            let d: i64[] = xs(v);
+            var parts: string[] = [];
+            if (is_seq(v)) {
+                for (let e: i64 in ys(v)) { parts.push(show(e)); }
+                return "<<\(join(&parts, ", "))>>";
+            }
+            var record: bool = true;
+        }
+    }
+}
