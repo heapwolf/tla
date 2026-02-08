@@ -1,0 +1,305 @@
+// Evaluation for tla: expressions to values (value.ae), and actions to their successor states,
+// as TLC finds them.
+//
+// * Environments are binding chains in one arena (Envs), so an operator's body sees its
+//   parameters and, for a LET definition, the scope it was written in, never its caller's. The
+//   arena is emptied after each state (reset_envs); no environment outlives that.
+// * Actions are read as TLC reads them: left to right, with a stack of remaining work. x' = e
+//   sets x' if unset (otherwise it is a test), x' \in S tries each element, \/ and \E try each
+//   branch, IF and CASE take the branch their condition picks, and definitions open in place.
+//   Anything else is a condition on what is set so far. A successor is found when nothing is
+//   left and every variable is set; an unset variable is an error.
+// * Init is read the same way, with x = e and x \in S setting unprimed variables.
+// * A parameterless definition that uses no variable (so cannot depend on the state) is
+//   computed once.
+
+import { Map, Set } from "std/containers";
+import { Op, Node, Kind, Global, prog, name, pos, glob } from "ast.ae";
+import {
+    EvalError, Tag, vt, FALSE, TRUE, is_int, int_of, mk_int, small, mk_bool, mk_str, tag, is_tag,
+    xs, ys, size, mk_set, mk_set_sorted, mk_func, mk_func_sorted, mk_tuple, mk_rec, mk_recset,
+    lazy, is_set, find, is_seq, apply, lookup, update, member, expand, elements, show,
+} from "value.ae";
+import str from "std/string";
+
+let UNSET: i64 = -1;
+
+// A binding: sym to a value (kind 0) or to a LET definition (kind 1: val is the LetDef node,
+// its scope parent).
+struct Envs {
+    syms: i64[] = [];
+    vals: i64[] = [];
+    kinds: i64[] = [];
+    parents: i64[] = [];
+}
+
+// An action's remaining work: node, in env.
+struct Item {
+    node: i64;
+    env: i64;
+    ctx: string;                        // The innermost definition it is in (for labels).
+}
+
+/// Evaluator state.
+export struct Cx {
+    export cur: i64[] = [];             // Current state: a value per variable.
+    export nxt: i64[] = [];             // Next state being built (UNSET if not set yet).
+    export init: bool = false;          // Reading Init: setting unprimed variables.
+    export consts: i64[] = [];          // A value per constant.
+    memo: Map(i64, i64) = Map {};       // Constant definitions' values.
+    level: Map(i64, bool) = Map {};     // Whether a definition is constant.
+    visiting: Set(i64) = Set {};        // Definitions whose level is being found.
+    envs: Envs = Envs {};
+    todo: Item[] = [];
+    export label: string = "";          // How the state being built was reached: the innermost
+                                        //   definition open when a variable was first set.
+    fixed: bool = false;                // Whether label is set for this state.
+    ctx: string = "";                   // Definition the current item is written in.
+    export found: i64[] = [];           // States found, each a tuple of the variables.
+    export labels: string[] = [];
+    export at: i64 = -1;                // Node being evaluated, for errors.
+}
+
+export var cx: Cx = Cx {};
+
+/// Resets for a new spec (after parse); consts holds the constants' values.
+export fn start(consts: i64[]) -> void {
+    cx = Cx { consts: consts };
+    let n: i64 = prog.vars.len;
+    var cur: i64[n];
+    var nxt: i64[n];
+    cx.cur = cur;
+    cx.nxt = nxt;
+}
+
+/// Empties the environment arena.
+export fn reset_envs() -> void { cx.envs = Envs {}; }
+
+fn bind(s: i64, v: i64, kind: i64, parent: i64) -> i64 {
+    cx.envs.syms.push(s);
+    cx.envs.vals.push(v);
+    cx.envs.kinds.push(kind);
+    cx.envs.parents.push(parent);
+    return cx.envs.syms.len - 1;
+}
+
+fn find_env(s: i64, env: i64) -> i64 {
+    var e: i64 = env;
+    while (e >= 0) {
+        if (cx.envs.syms[e] == s) { return e; }
+        e = cx.envs.parents[e];
+    }
+    return -1;
+}
+
+// An error at the node being evaluated. (value.ae errors have no position: whoever reports an
+// EvalError adds it with where().)
+fn err(msg: string) -> EvalError { return EvalError { msg: msg }; }
+
+/// The node being evaluated when the last error happened.
+export fn where_at() -> string {
+    if (cx.at >= 0) { return pos(cx.at); }
+    return prog.module;
+}
+
+// A finite lazy set is expanded before going into a value, so equal values keep equal ids.
+fn norm(v: i64) -> i64 | EvalError {
+    if (is_int(v)) { return v; }
+    return match (tag(v)) {
+        Tag::Pow | Tag::FnSet | Tag::RecSet => expand(v)?,
+        _ => v,
+    };
+}
+
+fn int(v: i64) -> i64 | EvalError {
+    if (!is_int(v)) { fail err("expected an integer, not \(show(v))"); }
+    return int_of(v);
+}
+
+fn boolean(v: i64) -> bool | EvalError {
+    if (v == TRUE) { return true; }
+    if (v != FALSE) { fail err("expected a boolean, not \(show(v))"); }
+    return false;
+}
+
+fn eq(a: i64, b: i64) -> bool | EvalError {
+    if (a == b) { return true; }
+    return norm(a)? == norm(b)?;
+}
+
+fn var_value(index: i64, primed: bool) -> i64 | EvalError {
+    if (primed || cx.init) {
+        let v: i64 = cx.nxt[index];
+        if (v == UNSET) {
+            var tick: string = "";
+            if (primed) { tick = "'"; }
+            fail err("\(name(prog.vars[index]))\(tick) is read before it is set");
+        }
+        return v;
+    }
+    return cx.cur[index];
+}
+
+// The values of n's bounds (syms over kids), each an expanded set.
+fn bound_sets(n: i64, env: i64) -> i64[][] | EvalError {
+    var sets: i64[][] = [];
+    let kids: i64[] = std::copy(prog.nodes[n].kids);
+    for (let k: i64 in &kids) { sets.push(elements(eval(k, env)?)?); }
+    return sets;
+}
+
+// Advances pick to the next combination of sets' elements; false after the last.
+fn advance(mut pick: &i64[], sets: &i64[][]) -> bool {
+    var i: i64 = pick.len - 1;
+    while (i >= 0) {
+        pick[i] += 1;
+        if (pick[i] < sets[i].len) { return true; }
+        pick[i] = 0;
+        i -= 1;
+    }
+    return false;
+}
+
+fn any_empty(sets: &i64[][]) -> bool {
+    for (let s: &i64[] in sets) { if (s.len == 0) { return true; } }
+    return false;
+}
+
+// env with syms bound to the elements pick chooses.
+fn bind_pick(syms: &i64[], sets: &i64[][], pick: &i64[], env: i64) -> i64 {
+    var e: i64 = env;
+    for (let i: i64 in 0..syms.len) { e = bind(syms[i], sets[i][pick[i]], 0, e); }
+    return e;
+}
+
+// The environment for calling def (params bound to args) in scope.
+fn call_env(params: &i64[], args: &i64[], scope: i64) -> i64 {
+    var e: i64 = scope;
+    for (let i: i64 in 0..params.len) { e = bind(params[i], args[i], 0, e); }
+    return e;
+}
+
+fn eval_args(n: i64, env: i64) -> i64[] | EvalError {
+    var args: i64[] = [];
+    let kids: i64[] = std::copy(prog.nodes[n].kids);
+    for (let k: i64 in &kids) { args.push(eval(k, env)?); }
+    return args;
+}
+
+/// The value of node n in env.
+export fn eval(n: i64, env: i64) -> i64 | EvalError {
+    cx.at = n;
+    let op: Op = prog.nodes[n].op;
+    match (op) {
+        Op::Num => { return mk_int(prog.nodes[n].num)?; },
+        Op::Str => { return mk_str(prog.nodes[n].str); },
+        Op::Bool => { return mk_bool(prog.nodes[n].num == 1); },
+        Op::Local => {
+            let e: i64 = find_env(prog.nodes[n].sym, env);
+            if (e < 0) { fail err("\(name(prog.nodes[n].sym)) is not bound here"); }
+            if (cx.envs.kinds[e] == 0) { return cx.envs.vals[e]; }
+            return eval(prog.nodes[cx.envs.vals[e]].b, cx.envs.parents[e]);
+        },
+        Op::Global => { return global(n); },
+        Op::Call => {
+            let args: i64[] = eval_args(n, env)?;
+            cx.at = n;
+            let s: i64 = prog.nodes[n].sym;
+            if (prog.nodes[n].num == 1) {
+                let e: i64 = find_env(s, env);
+                let d: i64 = cx.envs.vals[e];
+                let params: i64[] = std::copy(prog.nodes[d].syms);
+                return eval(prog.nodes[d].b, call_env(&params, &args, cx.envs.parents[e]));
+            }
+            let g: Global = glob(s);
+            if (g.kind == Kind::Builtin) { return builtin(name(s), &args); }
+            if (g.body < 0) { fail err("\(name(s)) is declared RECURSIVE but never defined"); }
+            return eval(g.body, call_env(&g.params, &args, -1));
+        },
+        Op::Prime => {
+            let g: Global = glob(prog.nodes[prog.nodes[n].a].sym);
+            if (cx.init) { fail err("a primed variable in Init"); }
+            return var_value(g.index, true);
+        },
+        Op::Not => { return mk_bool(!boolean(eval(prog.nodes[n].a, env)?)?); },
+        Op::Neg => { return mk_int(-int(eval(prog.nodes[n].a, env)?)?)?; },
+        Op::Powerset => {
+            let s: i64 = eval(prog.nodes[n].a, env)?;
+            if (!is_set(s)) { fail err("SUBSET of \(show(s)), which is not a set"); }
+            return lazy(Tag::Pow, s, 0);
+        },
+        Op::BigUnion => {
+            var out: i64[] = [];
+            for (let s: i64 in elements(eval(prog.nodes[n].a, env)?)?) {
+                for (let e: i64 in elements(s)?) { out.push(e); }
+            }
+            return mk_set(out);
+        },
+        Op::Domain => {
+            let f: i64 = eval(prog.nodes[n].a, env)?;
+            if (!is_tag(f, Tag::Func)) { fail err("DOMAIN of \(show(f)), which is not a function"); }
+            return mk_set_sorted(xs(f));
+        },
+        Op::Unchanged => {
+            var vars: i64[] = [];
+            unchanged_vars(prog.nodes[n].a, mut &vars)?;
+            for (let i: i64 in &vars) {
+                if (!eq(var_value(i, true)?, cx.cur[i])?) { return FALSE; }
+            }
+            return TRUE;
+        },
+        Op::And => {
+            let kids: i64[] = std::copy(prog.nodes[n].kids);
+            for (let k: i64 in &kids) { if (!boolean(eval(k, env)?)?) { return FALSE; } }
+            return TRUE;
+        },
+        Op::Or => {
+            let kids: i64[] = std::copy(prog.nodes[n].kids);
+            for (let k: i64 in &kids) { if (boolean(eval(k, env)?)?) { return TRUE; } }
+            return FALSE;
+        },
+        Op::Implies => {
+            if (!boolean(eval(prog.nodes[n].a, env)?)?) { return TRUE; }
+            return mk_bool(boolean(eval(prog.nodes[n].b, env)?)?);
+        },
+        Op::Equiv => {
+            let a: bool = boolean(eval(prog.nodes[n].a, env)?)?;
+            return mk_bool(a == boolean(eval(prog.nodes[n].b, env)?)?);
+        },
+        Op::Eq => { return mk_bool(eq(eval(prog.nodes[n].a, env)?, eval(prog.nodes[n].b, env)?)?); },
+        Op::Neq => { return mk_bool(!eq(eval(prog.nodes[n].a, env)?, eval(prog.nodes[n].b, env)?)?); },
+        Op::Lt | Op::Gt | Op::Le | Op::Ge | Op::Plus | Op::Minus | Op::Times | Op::Div | Op::Mod | Op::Pow | Op::Range => {
+            let a: i64 = int(eval(prog.nodes[n].a, env)?)?;
+            let b: i64 = int(eval(prog.nodes[n].b, env)?)?;
+            cx.at = n;
+            return arith(op, a, b);
+        },
+        Op::In => { return mk_bool(member(eval(prog.nodes[n].a, env)?, eval(prog.nodes[n].b, env)?)?); },
+        Op::NotIn => { return mk_bool(!member(eval(prog.nodes[n].a, env)?, eval(prog.nodes[n].b, env)?)?); },
+        Op::SubsetEq => {
+            let a: i64 = eval(prog.nodes[n].a, env)?;
+            let b: i64 = eval(prog.nodes[n].b, env)?;
+            for (let e: i64 in elements(a)?) { if (!member(e, b)?) { return FALSE; } }
+            return TRUE;
+        },
+        Op::Cup => {
+            var out: i64[] = elements(eval(prog.nodes[n].a, env)?)?;
+            for (let e: i64 in elements(eval(prog.nodes[n].b, env)?)?) { out.push(e); }
+            return mk_set(out);
+        },
+        Op::Cap | Op::SetMinus => {
+            let a: i64[] = elements(eval(prog.nodes[n].a, env)?)?;
+            let b: i64 = eval(prog.nodes[n].b, env)?;
+            if (!is_set(b)) { fail err("\(show(b)) is not a set"); }
+            var out: i64[] = [];
+            for (let e: i64 in &a) {
+                if (member(e, b)? == (op == Op::Cap)) { out.push(e); }
+            }
+            return mk_set_sorted(out);
+        },
+        Op::Concat => {
+            let a: i64 = eval(prog.nodes[n].a, env)?;
+            let b: i64 = eval(prog.nodes[n].b, env)?;
+        }
+    }
+}
