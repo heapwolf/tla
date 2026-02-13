@@ -300,6 +300,99 @@ export fn eval(n: i64, env: i64) -> i64 | EvalError {
         Op::Concat => {
             let a: i64 = eval(prog.nodes[n].a, env)?;
             let b: i64 = eval(prog.nodes[n].b, env)?;
+            if (!is_seq(a) || !is_seq(b)) { fail err("\\o of \(show(a)) and \(show(b)): both must be sequences"); }
+            var out: i64[] = ys(a);
+            for (let e: i64 in ys(b)) { out.push(e); }
+            return mk_tuple(out);
+        },
+        Op::ColonGt => {
+            let a: i64 = norm(eval(prog.nodes[n].a, env)?)?;
+            let b: i64 = norm(eval(prog.nodes[n].b, env)?)?;
+            return mk_func_sorted([a], [b]);
+        },
+        Op::AtAt => {
+            let f: i64 = eval(prog.nodes[n].a, env)?;
+            let g: i64 = eval(prog.nodes[n].b, env)?;
+            if (!is_tag(f, Tag::Func) || !is_tag(g, Tag::Func)) { fail err("@@ of \(show(f)) and \(show(g)): both must be functions"); }
+            var d: i64[] = xs(f);
+            var r: i64[] = ys(f);
+            let gd: i64[] = xs(g);
+            let gr: i64[] = ys(g);
+            for (let i: i64 in 0..gd.len) {
+                if (find(&vt.nodes[f >> 1].xs, gd[i]) < 0) {
+                    d.push(gd[i]);
+                    r.push(gr[i]);
+                }
+            }
+            return mk_func(&d, &r)?;
+        },
+        Op::Cross => {
+            var sets: i64[][] = [];
         }
+    }
+}
+
+// a + b (op 0), a - b (1) or a * b (2), or Overflow.
+fn checked(op: i64, a: i64, b: i64) -> i64 | Overflow {
+    return match (op) {
+        0 => (a + b)?,
+        1 => (a - b)?,
+        _ => (a * b)?,
+    };
+}
+
+fn arith(op: Op, a: i64, b: i64) -> i64 | EvalError {
+    match (op) {
+        Op::Lt => { return mk_bool(a < b); },
+        Op::Gt => { return mk_bool(a > b); },
+        Op::Le => { return mk_bool(a <= b); },
+        Op::Ge => { return mk_bool(a >= b); },
+        Op::Plus => {
+            match (checked(0, a, b)) {
+                v => { return mk_int(v)?; },
+                e: Overflow => { fail err("overflow: \(a) + \(b)"); },
+            }
+        },
+        Op::Minus => {
+            match (checked(1, a, b)) {
+                v => { return mk_int(v)?; },
+                e: Overflow => { fail err("overflow: \(a) - \(b)"); },
+            }
+        },
+        Op::Times => {
+            match (checked(2, a, b)) {
+                v => { return mk_int(v)?; },
+                e: Overflow => { fail err("overflow: \(a) * \(b)"); },
+            }
+        },
+        Op::Div | Op::Mod => {
+            if (b <= 0) { fail err("\\div and % need a positive divisor, not \(b)"); }
+            var q: i64 = a / b;
+            if (a % b != 0 && a < 0) { q -= 1; }       // floor, as in TLA+
+            if (op == Op::Div) { return mk_int(q)?; }
+            return mk_int(a - q * b)?;
+        },
+        Op::Pow => {
+            if (b < 0) { fail err("a negative exponent: \(a)^\(b)"); }
+            var r: i64 = 1;
+            for (let i: i64 in 0..b) {
+                match (checked(2, r, a)) {
+                    v => { r = v; },
+                    e: Overflow => { fail err("overflow: \(a)^\(b)"); },
+                }
+            }
+            return mk_int(r)?;
+        },
+        _ => {
+            // a..b
+            var out: i64[] = [];
+            var i: i64 = a;
+            if (b - a > 10000000) { fail err("\(a)..\(b) is too large to list"); }
+            while (i <= b) {
+                out.push(mk_int(i)?);
+                i += 1;
+            }
+            return mk_set_sorted(out);
+        },
     }
 }
