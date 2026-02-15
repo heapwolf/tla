@@ -328,7 +328,85 @@ export fn eval(n: i64, env: i64) -> i64 | EvalError {
         },
         Op::Cross => {
             var sets: i64[][] = [];
+            let kids: i64[] = std::copy(prog.nodes[n].kids);
+            for (let k: i64 in &kids) { sets.push(elements(eval(k, env)?)?); }
+            var out: i64[] = [];
+            if (any_empty(&sets)) { return mk_set_sorted([]); }
+            var pick: i64[sets.len];
+            while (true) {
+                var t: i64[] = [];
+                for (let i: i64 in 0..sets.len) { t.push(sets[i][pick[i]]); }
+                out.push(mk_tuple(t));
+                if (!advance(mut &pick, &sets)) { break; }
+            }
+            return mk_set(out);
+        },
+        Op::FnApp => {
+            let f: i64 = eval(prog.nodes[n].a, env)?;
+            let args: i64[] = eval_args(n, env)?;
+            cx.at = n;
+            var key: i64 = args[0];
+            if (args.len > 1) { key = mk_tuple(args); }
+            return apply(f, norm(key)?)?;
+        },
+        Op::Dot => {
+            let r: i64 = eval(prog.nodes[n].a, env)?;
+            cx.at = n;
+            if (!is_tag(r, Tag::Func)) { fail err("the field .\(prog.nodes[n].str) of \(show(r)), which is not a record"); }
+            return apply(r, mk_str(prog.nodes[n].str))?;
+        },
+        Op::SetEnum => {
+            var out: i64[] = [];
         }
+    }
+}
+
+// env with node n's LET definitions bound, each in the scope of those before it.
+fn let_env(n: i64, env: i64) -> i64 {
+    var e: i64 = env;
+    let defs: i64[] = std::copy(prog.nodes[n].kids);
+    for (let d: i64 in &defs) { e = bind(prog.nodes[d].sym, d, 1, e); }
+    return e;
+}
+
+// [f EXCEPT ![path[i]]...[path[last]] = v]: v is the item's value, @ the old value. A .f in
+// the path is the string "f", as in TLA+.
+fn except_at(f: i64, path: &i64[], i: i64, item: i64, env: i64) -> i64 | EvalError {
+    let key: i64 = norm(eval(path[i], env)?)?;
+    if (!is_tag(f, Tag::Func)) { fail err("EXCEPT on \(show(f)), which is not a function"); }
+    if (let old = lookup(f, key)) {
+        var v: i64 = 0;
+        if (i == path.len - 1) {
+            v = norm(eval(prog.nodes[item].b, bind(prog.at, old, 0, env))?)?;
+        } else {
+            v = except_at(old, path, i + 1, item, env)?;
+        }
+        return update(f, key, v)?;
+    }
+    return f;
+}
+
+fn global(n: i64) -> i64 | EvalError {
+    let s: i64 = prog.nodes[n].sym;
+    let g: Global = glob(s);
+    match (g.kind) {
+        Kind::Var => { return var_value(g.index, false); },
+        Kind::Const => { return cx.consts[g.index]; },
+        Kind::Builtin => {
+            return match (name(s)) {
+                "Nat" => lazy(Tag::Nat, 0, 0),
+                "Int" => lazy(Tag::Int, 0, 0),
+                "STRING" => lazy(Tag::Strings, 0, 0),
+                _ => mk_set_sorted([FALSE, TRUE]),
+            };
+        },
+        Kind::Missing => { fail err("internal: \(name(s)) is not defined"); },
+        Kind::Def => {
+            if (let v = cx.memo.get(s)) { return v; }
+            let v: i64 = eval(g.body, -1)?;
+            if (constant_def(s)) { cx.memo.put(s, v); }
+            return v;
+        },
     }
 }
 
