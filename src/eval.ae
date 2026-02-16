@@ -474,3 +474,188 @@ fn arith(op: Op, a: i64, b: i64) -> i64 | EvalError {
         },
     }
 }
+
+// ---- Actions ----
+
+// The variable assignment n sets: x' (or x in Init), if n is one and x is unset; else -1.
+fn target(n: i64) -> i64 {
+    let nd: &Node = &prog.nodes[n];
+    var v: i64 = -1;
+    if (nd.op == Op::Prime && !cx.init) {
+        v = n;
+        v = prog.nodes[nd.a].sym;
+    } else if (nd.op == Op::Global && cx.init) {
+        v = nd.sym;
+    } else {
+        return -1;
+    }
+    let g: Global = glob(v);
+    if (g.kind != Kind::Var || cx.nxt[g.index] != UNSET) { return -1; }
+    return g.index;
+}
+
+fn run() -> void | EvalError {
+    if (cx.todo.len == 0) { return emit(); }
+    let it: Item = cx.todo.pop();
+    let outer: string = cx.ctx;
+    cx.ctx = it.ctx;
+    step(it.node, it.env)?;
+    cx.ctx = outer;
+    cx.todo.push(it);
+}
+
+fn then(n: i64, env: i64) -> void | EvalError {
+    cx.todo.push(Item { node: n, env: env, ctx: cx.ctx });
+    run()?;
+    cx.todo.pop();
+}
+
+// One action item: node n in env, then the rest.
+fn step(n: i64, env: i64) -> void | EvalError {
+    cx.at = n;
+    let op: Op = prog.nodes[n].op;
+    match (op) {
+        Op::And => {
+            let kids: i64[] = std::copy(prog.nodes[n].kids);
+            var k: i64 = kids.len - 1;
+            while (k >= 0) {
+                cx.todo.push(Item { node: kids[k], env: env, ctx: cx.ctx });
+                k -= 1;
+            }
+            run()?;
+            for (let i: i64 in 0..kids.len) { cx.todo.pop(); }
+            return;
+        },
+        Op::Or => {
+            let kids: i64[] = std::copy(prog.nodes[n].kids);
+            for (let k: i64 in &kids) { then(k, env)?; }
+            return;
+        },
+        Op::Exists => {
+            let syms: i64[] = std::copy(prog.nodes[n].syms);
+            let sets: i64[][] = bound_sets(n, env)?;
+            if (any_empty(&sets)) { return; }
+            var pick: i64[syms.len];
+            while (true) {
+                then(prog.nodes[n].b, bind_pick(&syms, &sets, &pick, env))?;
+                if (!advance(mut &pick, &sets)) { break; }
+            }
+            return;
+        },
+        Op::Eq => {
+            let v: i64 = target(prog.nodes[n].a);
+            if (v >= 0) {
+                cx.nxt[v] = storable(eval(prog.nodes[n].b, env)?)?;
+                let fixed: bool = fix_label();
+                run()?;
+                if (fixed) { unfix_label(); }
+                cx.nxt[v] = UNSET;
+                return;
+            }
+        },
+        Op::In => {
+            let v: i64 = target(prog.nodes[n].a);
+            if (v >= 0) {
+                let fixed: bool = fix_label();
+                for (let e: i64 in elements(eval(prog.nodes[n].b, env)?)?) {
+                    cx.nxt[v] = storable(e)?;
+                    run()?;
+                }
+                if (fixed) { unfix_label(); }
+                cx.nxt[v] = UNSET;
+                return;
+            }
+        },
+        Op::Unchanged => {
+            if (cx.init) { fail err("UNCHANGED in Init"); }
+            var vars: i64[] = [];
+            unchanged_vars(prog.nodes[n].a, mut &vars)?;
+            var set: i64[] = [];
+            var ok: bool = true;
+            for (let i: i64 in &vars) {
+                if (cx.nxt[i] == UNSET) {
+                    cx.nxt[i] = cx.cur[i];
+                    set.push(i);
+                } else if (cx.nxt[i] != cx.cur[i]) {
+                    ok = false;
+                }
+            }
+            var fixed: bool = false;
+            if (set.len > 0) { fixed = fix_label(); }
+            if (ok) { run()?; }
+            if (fixed) { unfix_label(); }
+            for (let i: i64 in &set) { cx.nxt[i] = UNSET; }
+            return;
+        },
+        Op::If => {
+            if (boolean(eval(prog.nodes[n].a, env)?)?) {
+                then(prog.nodes[n].b, env)?;
+            }
+        }
+    }
+}
+
+// Sets the label if this is the state's first variable set: the innermost definition the
+// assignment is in (TLC names a step by its action). Items carry it (Item.ctx) because the rest
+// of an action runs inside each step, so what is "open" is not where a node is written. Returns
+// whether it did, for unfix_label.
+fn fix_label() -> bool {
+    if (cx.fixed) { return false; }
+    cx.fixed = true;
+    if (cx.ctx.len > 0) { cx.label = cx.ctx; } else { cx.label = "Next"; }
+    return true;
+}
+
+fn unfix_label() -> void {
+    cx.fixed = false;
+    cx.label = "";
+}
+
+fn emit() -> void | EvalError {
+    for (let i: i64 in 0..cx.nxt.len) {
+        if (cx.nxt[i] == UNSET) {
+            var tick: string = "'";
+            if (cx.init) { tick = ""; }
+            fail err("a state where \(name(prog.vars[i]))\(tick) is never set");
+        }
+    }
+    cx.found.push(mk_tuple(std::copy(cx.nxt)));
+    cx.labels.push(cx.label);
+}
+
+fn unset_all() -> void {
+    for (let i: i64 in 0..cx.nxt.len) { cx.nxt[i] = UNSET; }
+}
+
+/// The initial states action init allows, into cx.found.
+export fn initial(init: i64) -> void | EvalError {
+    cx.found = [];
+    cx.labels = [];
+    cx.init = true;
+    unset_all();
+    cx.label = "Initial predicate";
+    cx.fixed = true;
+    cx.ctx = "";
+    then(init, -1)?;
+    cx.init = false;
+    cx.fixed = false;
+}
+
+/// The states action act leads to from state (a tuple of the variables), into cx.found.
+export fn successors(state: i64, act: i64) -> void | EvalError {
+    cx.found = [];
+    cx.labels = [];
+    cx.cur = ys(state);
+    unset_all();
+    cx.label = "";
+    cx.fixed = false;
+    cx.ctx = "";
+    reset_envs();
+    // Open Next here so the label is the action within it.
+    var root: i64 = act;
+    if (prog.nodes[act].op == Op::Global) {
+        let g: Global = glob(prog.nodes[act].sym);
+        if (g.kind == Kind::Def) { root = g.body; }
+    }
+    then(root, -1)?;
+}
