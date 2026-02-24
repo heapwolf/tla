@@ -1,0 +1,145 @@
+// A model's configuration, in TLC's .cfg format.
+//
+//   CONSTANTS N = 3  Nodes = {n1, n2, n3}  Limit <- MyLimit
+//   INIT Init  NEXT Next            (or SPECIFICATION Spec, of the form Init /\ [][Next]_vars)
+//   INVARIANTS TypeOK Safe
+//   CONSTRAINT Bound
+//   CHECK_DEADLOCK FALSE
+//   SYMMETRY Perms                  (Perms == Permutations(Nodes): states that differ only by
+//                                    node names count as one)
+//
+// A constant's value is a number, string, TRUE, FALSE, model value (a name: n1), or a set of
+// these. `C <- Def` sets C to the module's definition Def. PROPERTY names temporal properties
+// (forms in check.ae). TLC sections the subset lacks (VIEW, ACTION_CONSTRAINT, ALIAS,
+// POSTCONDITION) are errors, so a pass never implies a check that did not run.
+
+import { Tk, Token, Lexed, lex } from "lex.ae";
+import str from "std/string";
+
+/// A constant's value as written: a leaf (num, str, bool or model) or a set of them.
+export struct CVal {
+    export kind: string;                // "num", "str", "bool", "model", "set" or "def"
+    export num: i64 = 0;
+    export text: string = "";           // A string, or a model value's or definition's name.
+    export elems: CVal[] = [];
+}
+
+/// A configuration.
+export struct Cfg {
+    export names: string[] = [];        // The constants given, in order,
+    export vals: CVal[] = [];           // and their values.
+    export init: string = "";
+    export act: string = "";            // NEXT's name.
+    export spec: string = "";
+    export invariants: string[] = [];
+    export constraints: string[] = [];
+    export deadlock: bool = true;
+    export symmetry: string = "";       // SYMMETRY's definition, or ""
+    export properties: string[] = [];   // PROPERTY: temporal properties (P ~> Q, []<>P, <>P)
+    export error: string = "";
+}
+
+let sections: string[] = [
+    "CONSTANT", "CONSTANTS", "INIT", "NEXT", "SPECIFICATION", "INVARIANT", "INVARIANTS",
+    "CONSTRAINT", "CONSTRAINTS", "CHECK_DEADLOCK", "PROPERTY", "PROPERTIES", "SYMMETRY", "VIEW",
+    "ACTION_CONSTRAINT", "ACTION_CONSTRAINTS", "ALIAS", "POSTCONDITION",
+];
+
+fn is_section(t: &Token) -> bool {
+    if (t.kind != Tk::Ident) { return false; }
+    for (let s: string in &sections) { if (str::eq(s, t.text)) { return true; } }
+    return false;
+}
+
+struct Reader {
+    toks: Token[] = [];
+    i: i64 = 0;
+    file: string = "";
+}
+
+impl Reader {
+    fn at(self: &Reader) -> &self::&Token { return &self.toks[self.i]; }
+
+    fn here(self: &Reader) -> string {
+        let t: &Token = &self.toks[self.i];
+        return "\(self.file):\(t.line):\(t.col)";
+    }
+
+    fn value(mut self: &Reader) -> CVal | CfgError {
+        let t: Token = std::copy(self.toks[self.i]);
+        self.i += 1;
+        if (t.kind == Tk::Num) { return CVal { kind: "num", num: t.num }; }
+        if (t.kind == Tk::Str) { return CVal { kind: "str", text: t.text }; }
+        if (t.kind == Tk::Op && str::eq(t.text, "-")) {
+            let n: Token = std::copy(self.toks[self.i]);
+            if (n.kind != Tk::Num) { fail CfgError { msg: "\(self.here()): expected a number after -" }; }
+            self.i += 1;
+            return CVal { kind: "num", num: -n.num };
+        }
+        if (t.kind == Tk::Ident && !is_section(&t)) {
+            if (str::eq(t.text, "TRUE")) { return CVal { kind: "bool", num: 1 }; }
+            if (str::eq(t.text, "FALSE")) { return CVal { kind: "bool", num: 0 }; }
+            return CVal { kind: "model", text: t.text };
+        }
+        if (t.kind == Tk::Op && str::eq(t.text, "{")) {
+            var s: CVal = CVal { kind: "set" };
+            if (self.at().kind == Tk::Op && str::eq(self.at().text, "}")) {
+                self.i += 1;
+                return s;
+            }
+            while (true) {
+                s.elems.push(self.value()?);
+                let c: Token = std::copy(self.toks[self.i]);
+                self.i += 1;
+                if (c.kind == Tk::Op && str::eq(c.text, "}")) { break; }
+                if (c.kind != Tk::Op || !str::eq(c.text, ",")) { fail CfgError { msg: "\(self.here()): expected , or }" }; }
+    }
+}
+
+/// An unreadable configuration.
+export failure CfgError { msg: string; }
+
+/// The configuration in src (from file).
+export fn read_cfg(src: string, file: string) -> Cfg | CfgError {
+    let l: Lexed = lex(src);
+    if (l.error.len > 0) { fail CfgError { msg: "\(file):\(l.error)" }; }
+    var r: Reader = Reader { toks: std::copy(l.toks), file: file };
+    var c: Cfg = Cfg {};
+    while (r.at().kind != Tk::Eof) {
+        if (!is_section(r.at())) { fail CfgError { msg: "\(r.here()): expected a section such as CONSTANTS or INIT, not \(r.at().text)" }; }
+        let s: string = r.at().text;
+        r.i += 1;
+        match (s) {
+            "CONSTANT" | "CONSTANTS" => {
+                while (r.at().kind == Tk::Ident && !is_section(r.at())) {
+                    let n: string = r.at().text;
+                    r.i += 1;
+                    let op: Token = std::copy(r.toks[r.i]);
+                    r.i += 1;
+                    if (op.kind == Tk::Op && str::eq(op.text, "=")) {
+                        c.names.push(n);
+                        c.vals.push(r.value()?);
+                    } else if (op.kind == Tk::Op && str::eq(op.text, "<-")) {
+                        let d: Token = std::copy(r.toks[r.i]);
+                        r.i += 1;
+                        if (d.kind != Tk::Ident) { fail CfgError { msg: "\(r.here()): expected a definition after <-" }; }
+                        c.names.push(n);
+                        c.vals.push(CVal { kind: "def", text: d.text });
+                    } else {
+                        fail CfgError { msg: "\(file):\(op.line):\(op.col): expected = or <- after \(n)" };
+                    }
+                }
+            },
+            "INIT" => { c.init = r.one("INIT")?; },
+            "NEXT" => { c.act = r.one("NEXT")?; },
+            "SPECIFICATION" => { c.spec = r.one("SPECIFICATION")?; },
+            "INVARIANT" | "INVARIANTS" => { for (let n: string in r.names()) { c.invariants.push(n); } },
+            "CONSTRAINT" | "CONSTRAINTS" => { for (let n: string in r.names()) { c.constraints.push(n); } },
+            "SYMMETRY" => { c.symmetry = r.one("SYMMETRY")?; },
+            "PROPERTY" | "PROPERTIES" => { for (let n: string in r.names()) { c.properties.push(n); } },
+            "CHECK_DEADLOCK" => {
+                let v: CVal = r.value()?;
+            }
+        }
+    }
+}
