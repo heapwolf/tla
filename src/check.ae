@@ -1,0 +1,201 @@
+// tla's model checker: a breadth-first search of every state a spec can reach, as TLC does,
+// checking each against the invariants.
+//
+// * As in TLC, a found state is kept as its fingerprint, parent and how it was reached; it is
+//   kept whole (an interned tuple, value.ae) only while queued. Values held only by explored
+//   states are freed now and then (value::compact). A violation is shown as the shortest
+//   behavior leading to it, in TLC's wording and layout: the behavior is found again from the
+//   initial states, each step the successor with the next fingerprint.
+// * A state breaking a CONSTRAINT is checked against the invariants, but its successors are not
+//   explored. (So a constraint bounds the search and can hide only states, never steps.)
+// * Deadlock (a state with no successor) is an error unless CHECK_DEADLOCK FALSE, as in TLC.
+// * PROPERTY: P ~> Q, []<>Q (TRUE ~> Q) or <>Q (Q eventually, from the initial states), P and Q
+//   state predicates, under the SPECIFICATION's fairness (WF_vars(A), SF_vars(A), also under
+//   \A). Checked as TLC does: the state graph is kept (each state's successors, which fairness
+//   conditions each step is a step of, which are enabled where); the states still awaiting Q
+//   (reached from one where P holds and Q doesn't, through states where Q doesn't) are split
+//   into strongly connected components, each state able to stutter; a component a fair
+//   behavior can stay in forever is a counterexample, shown as a behavior into it and around
+//   it. WF holds in a component if its action is taken in it or disabled in one of its states;
+//   SF, if taken or disabled in all of them (else the states where it's enabled are dropped
+//   and the rest split again).
+// * Exit codes are TLC's: 0 no error, 10 an ASSUME is false, 11 deadlock, 12 an invariant is
+//   violated, 13 a temporal property is violated, 75 an evaluation error, 150 a spec or cfg
+//   could not be read. tla adds 1: the search stopped at a limit (max_states, max_values)
+//   before finishing, so a model too large for the machine stops with a message instead of
+//   being killed.
+
+import fs from "std/fs";
+import { Map } from "std/containers";
+import { Op, Node, Kind, Global, prog, sym, name, add, pos, glob } from "ast.ae";
+import { parse, ParseError } from "parse.ae";
+import { Cfg, CVal, CfgError, read_cfg } from "cfg.ae";
+import { EvalError, reset, mk_int, mk_str, mk_model, mk_bool, mk_set, show, xs, ys, TRUE, vt, Tag, is_tag, elements, fingerprint, compact } from "value.ae";
+import { cx, start, eval, initial, successors, successors_with, eval_with, holds, constant_node, reset_envs, where_at, value_roots, reroot } from "eval.ae";
+import str from "std/string";
+import process from "std/process";
+
+/// What a check found.
+export struct Report {
+    export code: i64 = 0;
+    export distinct: i64 = 0;           // Distinct states found.
+    export generated: i64 = 0;          // States generated, including repeats.
+    export depth: i64 = 0;              // Longest shortest path from an initial state, + 1.
+    export out: string[] = [];          // Output: verdict, trace, counts.
+}
+
+/// How to check.
+export struct Options {
+    export spec: string;                // The .tla file.
+    export cfg: string = "";            // The .cfg file; if "", the spec's name with .cfg.
+    export deadlock: bool = true;       // false: never report deadlock (TLC's -deadlock).
+    export progress: bool = false;      // Print progress while searching.
+    export max_states: i64 = 1000000;   // Stop past this many distinct states,
+    export max_values: i64 = 20000000;  // or this many values made (each ~100 bytes or more).
+    export compact_at: i64 = 1000000;   // Free explored states' values at this many, then
+                                        //   at twice as many as were kept (tests: 1, every step).
+    export simulate: i64 = 0;           // > 0: that many random behaviors instead of a search,
+    export depth: i64 = 100;            //   each at most this many steps,
+    export seed: i64 = 1;               //   from this seed (same seed, same walks).
+}
+
+struct Search {
+    states: i64[] = [];                 // In order found: the queue. (Not renamed, so each is a
+                                        //   successor of its parent and a trace is a behavior,
+                                        //   with or without SYMMETRY.) -1 once explored.
+    fps: i64[] = [];                    // Each state's canonical form.
+    parents: i64[] = [];
+    depths: i64[] = [];
+    seen: Map(i64, i64) = Map {};       // Each state's canonical form -> its index.
+    perms: Map(i64, i64)[] = [];        // SYMMETRY's permutations (model value -> model value)
+    caches: Map(i64, i64)[] = [];       //   and the fingerprints each made. Without SYMMETRY,
+    sym: bool = false;                  //   just the identity.
+    init: i64 = -1;                     // Init and Next, to rebuild a trace's behavior.
+    act: i64 = -1;
+    compact_at: i64 = 1000000;          // Free explored states' values past this many,
+    compact_min: i64 = 1000000;         //   and at least this many (Options.compact_at).
+    // The state graph for PROPERTY (live), by state, in explored order.
+    live: bool = false;
+}
+
+fn say(mut r: &Report, line: string) -> void { r.out.push(line); }
+
+fn show_state(st: i64) -> string[] {
+    var lines: string[] = [];
+    let vals: i64[] = ys(st);
+    for (let i: i64 in 0..vals.len) { lines.push("/\\ \(name(prog.vars[i])) = \(show(vals[i]))"); }
+    return lines;
+}
+
+fn counts(s: &Search, mut r: &Report) -> void {
+    r.distinct = s.states.len;
+    var d: i64 = 0;
+    for (let x: i64 in &s.depths) { if (x > d) { d = x; } }
+    r.depth = d;
+    say(r, "\(r.generated) states generated, \(r.distinct) distinct states found.");
+    // TLC's optimistic estimate: n * m / 2^64, for n distinct of m generated
+    let p: f64 = (r.distinct as f64) * (r.generated as f64) / 18446744073709551616.0;
+    var how: string = "";
+    if (s.sym) { how = ", up to SYMMETRY's renamings"; }
+    say(r, "States are told apart by 64-bit fingerprints\(how): the chance of a collision is about \(p).");
+    say(r, "The depth of the complete state graph search is \(r.depth).");
+}
+
+/// Checks the spec in o.spec against its cfg.
+export fn check(o: &Options) -> Report {
+    var r: Report = Report {};
+    let src: string = fs::read_file(o.spec) ?? "\u{0}";
+    if (str::eq(src, "\u{0}")) {
+        say(mut &r, "Error: cannot read \(o.spec)");
+        r.code = 150;
+        return r;
+    }
+    match (parse(src, o.spec)) {
+        v => {},
+        e: ParseError => {
+            say(mut &r, "Error: \(e.msg)");
+            r.code = 150;
+            return r;
+        },
+    }
+    var cfg_path: string = o.cfg;
+    if (cfg_path.len == 0) {
+        cfg_path = o.spec;
+        if (cfg_path.len > 4 && str::eq(cfg_path[cfg_path.len - 4..], ".tla")) {
+            cfg_path = cfg_path[0..cfg_path.len - 4];
+        }
+        cfg_path = "\(cfg_path).cfg";
+    }
+    let csrc: string = fs::read_file(cfg_path) ?? "\u{0}";
+    if (str::eq(csrc, "\u{0}")) {
+        say(mut &r, "Error: cannot read \(cfg_path)");
+        r.code = 150;
+        return r;
+    }
+}
+
+fn run(o: &Options, c: &Cfg, mut r: &Report) -> void | EvalError {
+    reset();
+    // The constants: values first, then those given by definitions (which may use them).
+    let nc: i64 = prog.consts.len;
+    var consts: i64[nc];
+    var given: bool[nc];
+    for (let i: i64 in 0..c.names.len) {
+        let s: i64 = sym(c.names[i]);
+        let g: Global = glob(s);
+        if (g.kind != Kind::Const) {
+            say(r, "Error: \(c.names[i]) in the cfg is not a CONSTANT of the spec");
+            r.code = 150;
+            return;
+        }
+        if (!str::eq(c.vals[i].kind, "def")) {
+            consts[g.index] = cval(&c.vals[i])?;
+            given[g.index] = true;
+        }
+    }
+    start(std::copy(consts));
+    for (let i: i64 in 0..c.names.len) {
+        if (str::eq(c.vals[i].kind, "def")) {
+            let s: i64 = sym(c.names[i]);
+            let g: Global = glob(s);
+            let d: i64 = named(c.vals[i].text, "definition", r);
+            if (d < 0) { return; }
+            if (!constant_node(d)) {
+                say(r, "Error: \(c.vals[i].text), given to \(c.names[i]), depends on the variables");
+                r.code = 150;
+                return;
+            }
+            consts[g.index] = eval(d, -1)?;
+            given[g.index] = true;
+            cx.consts = std::copy(consts);
+        }
+    }
+    for (let i: i64 in 0..nc) {
+        if (!given[i]) {
+            say(r, "Error: the constant \(name(prog.consts[i])) has no value in the cfg");
+            r.code = 150;
+            return;
+        }
+    }
+    for (let a: i64 in &prog.assumes) {
+        if (!constant_node(a)) {
+            say(r, "Error: \(pos(a)): an ASSUME uses a variable");
+            r.code = 150;
+            return;
+        }
+        reset_envs();
+        if (eval(a, -1)? != TRUE) {
+            say(r, "Error: Assumption at \(pos(a)) is false.");
+            r.code = 10;
+            return;
+        }
+    }
+    var init: i64 = -1;
+    var act: i64 = -1;
+    var fair: i64[] = [];
+    if (c.spec.len > 0) {
+        from_spec(c.spec, r, mut &init, mut &act, mut &fair);
+    } else {
+        init = named(c.init, "INIT", r);
+    }
+}
