@@ -1,0 +1,42 @@
+// tla: checks a TLA+ spec's safety invariants (subset in README.md).
+//   tla Spec.tla [-config Spec.cfg] [-deadlock] [-progress] [-maxstates N] [-maxvalues N]
+//            [-simulate N] [-depth D] [-seed S]
+// TLC's flags: -config names the cfg (default: spec name + .cfg), -deadlock disables the
+// deadlock check, -simulate N checks N random behaviors of at most -depth steps (from -seed)
+// instead of searching. tla's own: -maxstates and -maxvalues cap searches too large for the
+// machine. Exit codes are TLC's (check.ae).
+
+import { Options, Report, check } from "check.ae";
+import str from "std/string";
+
+fn main(args: string[]) -> i32 {
+    var o: Options = Options { spec: "" };
+    var i: i64 = 1;
+    while (i < args.len) {
+        let a: string = args[i];
+        if (str::eq(a, "-config") && i + 1 < args.len) {
+            o.cfg = args[i + 1];
+            i += 2;
+            continue;
+        }
+        let numeric: bool = str::eq(a, "-maxstates") || str::eq(a, "-maxvalues") || str::eq(a, "-simulate") ||
+            str::eq(a, "-depth") || str::eq(a, "-seed");
+        if (numeric && i + 1 < args.len) {
+            var n: i64 = 0;
+            for (let c: u8 in args[i + 1]) {
+                if (c < '0' || c > '9') {
+                    eprintln("tla: \(a) takes a number");
+                    return 150;
+                }
+                n = n * 10 + (c - '0') as i64;
+            }
+            match (a) {
+                "-maxstates" => { o.max_states = n; },
+                "-maxvalues" => { o.max_values = n; },
+                "-simulate" => { o.simulate = n; },
+                "-depth" => { o.depth = n; },
+                _ => { o.seed = n; },
+            }
+        }
+    }
+}
