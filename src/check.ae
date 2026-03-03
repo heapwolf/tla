@@ -199,3 +199,24 @@ fn run(o: &Options, c: &Cfg, mut r: &Report) -> void | EvalError {
         init = named(c.init, "INIT", r);
     }
 }
+
+// The examples in examples/, with TLC's counts (a separate brute-force count agrees):
+// distinct states, states generated, depth. aec test runs from tla's root.
+fn expect(spec: string, cfg: string, code: i64, distinct: i64, generated: i64, depth: i64) -> i32 {
+    let r: Report = check(&Options { spec: "examples/\(spec).tla", cfg: cfg });
+    if (r.code != code || r.distinct != distinct || r.generated != generated || r.depth != depth) {
+        for (let l: string in &r.out) { eprintln(l); }
+        eprintln("\(spec): code \(r.code), \(r.distinct) distinct, \(r.generated) generated, depth \(r.depth)");
+        return 1;
+    }
+    return 0;
+}
+
+#test fn the_examples_have_tlcs_counts() -> i32 {
+    if (expect("TCommit", "", 0, 34, 94, 7) != 0) { return 1; }
+    if (expect("TwoPhase", "", 0, 288, 1146, 11) != 0) { return 2; }
+    // same, with interchangeable resource managers: 80 classes of the 288 (counted separately)
+    if (expect("TwoPhaseSym", "", 0, 80, 318, 11) != 0) { return 5; }
+    // DieHard's NotSolved fails after the 6 pours of the film (7 states).
+    if (expect("DieHard", "", 12, 14, 73, 7) != 0) { return 3; }
+}
