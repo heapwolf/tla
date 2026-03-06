@@ -87,6 +87,63 @@ fn show_state(st: i64) -> string[] {
     return lines;
 }
 
+// The behavior ending at state last, rebuilt (explored states aren't kept whole): from the
+// initial states, each step the successor whose canonical form is the next state's. Its
+// states go in states, how each was reached in labels.
+fn replay(mut s: &Search, last: i64, mut states: &i64[], mut labels: &string[]) -> void | EvalError {
+    var path: i64[] = [];
+    var k: i64 = last;
+    while (k >= 0) {
+        path.push(k);
+        k = s.parents[k];
+    }
+    reset_envs();
+    initial(s.init)?;
+    var choices: i64[] = std::copy(cx.found);
+    var how: string[] = [];
+    for (let c: i64 in &choices) { how.push("Initial predicate"); }
+    var i: i64 = path.len - 1;
+    while (i >= 0) {
+        let want: i64 = s.fps[path[i]];
+        var got: i64 = -1;
+        for (let j: i64 in 0..choices.len) {
+            if (canonical(s, choices[j]) == want) {
+                got = j;
+                break;
+            }
+        }
+        if (got < 0) { fail EvalError { msg: "no successor has the next state's fingerprint" }; }
+        states.push(choices[got]);
+        labels.push(std::copy(how[got]));
+        i -= 1;
+        if (i >= 0) {
+            successors(choices[got], s.act)?;
+            choices = std::copy(cx.found);
+            how = std::copy(cx.labels);
+        }
+    }
+}
+
+fn trace(mut s: &Search, last: i64, mut r: &Report) -> void {
+    var states: i64[] = [];
+    var labels: string[] = [];
+    match (replay(s, last, mut &states, mut &labels)) {
+        v => {},
+        e: EvalError => {
+            say(r, "Error: the behavior could not be found again: \(e.msg)");
+            return;
+        },
+    }
+    say(r, "Error: The behavior up to this point is:");
+    for (let i: i64 in 0..states.len) {
+        var label: string = labels[i];
+        if (label.len == 0) { label = "Next"; }
+        say(r, "State \(i + 1): <\(label)>");
+        for (let l: string in show_state(states[i])) { say(r, l); }
+        say(r, "");
+    }
+}
+
 fn counts(s: &Search, mut r: &Report) -> void {
     r.distinct = s.states.len;
     var d: i64 = 0;
@@ -99,6 +156,31 @@ fn counts(s: &Search, mut r: &Report) -> void {
     if (s.sym) { how = ", up to SYMMETRY's renamings"; }
     say(r, "States are told apart by 64-bit fingerprints\(how): the chance of a collision is about \(p).");
     say(r, "The depth of the complete state graph search is \(r.depth).");
+}
+
+// Adds st (found from parent by label) if new, then checks the invariants. Returns false if
+// one fails (r says which).
+fn found(mut s: &Search, st: i64, parent: i64, label: string, invs: &i64[], inv_names: &string[], mut r: &Report) -> bool | EvalError {
+    r.generated += 1;
+    let c: i64 = canonical(s, st);
+    if (s.seen.has(c)) { return true; }
+    let k: i64 = s.states.len;
+    s.seen.put(c, k);
+    s.states.push(st);
+    s.fps.push(c);
+    s.parents.push(parent);
+    var d: i64 = 1;
+    if (parent >= 0) { d = s.depths[parent] + 1; }
+    s.depths.push(d);
+    for (let i: i64 in 0..invs.len) {
+        if (!holds(st, invs[i])?) {
+            say(r, "Error: Invariant \(inv_names[i]) is violated.");
+            trace(s, k, r);
+            r.code = 12;
+            return false;
+        }
+    }
+    return true;
 }
 
 /// Checks the spec in o.spec against its cfg.
@@ -197,6 +279,31 @@ fn run(o: &Options, c: &Cfg, mut r: &Report) -> void | EvalError {
         from_spec(c.spec, r, mut &init, mut &act, mut &fair);
     } else {
         init = named(c.init, "INIT", r);
+        act = named(c.act, "NEXT", r);
+    }
+    if (r.code != 0) { return; }
+    var invs: i64[] = [];
+    for (let n: string in &c.invariants) { invs.push(named(n, "INVARIANT", r)); }
+    var cons: i64[] = [];
+    for (let n: string in &c.constraints) { cons.push(named(n, "CONSTRAINT", r)); }
+    if (r.code != 0) { return; }
+    let deadlock: bool = c.deadlock && o.deadlock;
+
+    var s: Search = Search {};
+    if (c.symmetry.len > 0) {
+        let d: i64 = named(c.symmetry, "SYMMETRY", r);
+        if (d < 0) { return; }
+        reset_envs();
+        for (let f: i64 in elements(eval(d, -1)?)?) {
+            if (!is_tag(f, Tag::Func)) {
+                say(r, "Error: SYMMETRY \(c.symmetry) holds \(show(f)), which is not a permutation");
+                r.code = 150;
+                return;
+            }
+            var perm: Map(i64, i64) = Map {};
+            let dom: i64[] = xs(f);
+            let rng: i64[] = ys(f);
+        }
     }
 }
 
