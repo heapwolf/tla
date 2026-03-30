@@ -590,7 +590,28 @@ fn step(n: i64, env: i64) -> void | EvalError {
         Op::If => {
             if (boolean(eval(prog.nodes[n].a, env)?)?) {
                 then(prog.nodes[n].b, env)?;
+            } else {
+                then(prog.nodes[n].c, env)?;
             }
+            return;
+        },
+        Op::Case => {
+            let arms: i64[] = std::copy(prog.nodes[n].kids);
+            for (let arm: i64 in &arms) {
+                if (boolean(eval(prog.nodes[arm].a, env)?)?) {
+                    then(prog.nodes[arm].b, env)?;
+                    return;
+                }
+            }
+            if (prog.nodes[n].c >= 0) {
+                then(prog.nodes[n].c, env)?;
+                return;
+            }
+            cx.at = n;
+            fail err("no CASE arm applies, and there is no OTHER");
+        },
+        Op::Let => {
+            then(prog.nodes[n].b, let_env(n, env))?;
         }
     }
 }
