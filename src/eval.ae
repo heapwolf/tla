@@ -475,6 +475,29 @@ fn arith(op: Op, a: i64, b: i64) -> i64 | EvalError {
     }
 }
 
+// The variables UNCHANGED e names: e is a variable, a tuple of them, or a definition of one.
+fn unchanged_vars(n: i64, mut out: &i64[]) -> void | EvalError {
+    let op: Op = prog.nodes[n].op;
+    if (op == Op::Tuple) {
+        let kids: i64[] = std::copy(prog.nodes[n].kids);
+        for (let k: i64 in &kids) { unchanged_vars(k, out)?; }
+        return;
+    }
+    if (op == Op::Global) {
+        let g: Global = glob(prog.nodes[n].sym);
+        if (g.kind == Kind::Var) {
+            out.push(g.index);
+            return;
+        }
+        if (g.kind == Kind::Def && g.params.len == 0 && g.body >= 0) {
+            unchanged_vars(g.body, out)?;
+            return;
+        }
+    }
+    cx.at = n;
+    fail err("UNCHANGED takes variables, or tuples of them");
+}
+
 // ---- Actions ----
 
 // The variable assignment n sets: x' (or x in Init), if n is one and x is unset; else -1.
