@@ -432,7 +432,87 @@ impl Parser {
         } else {
             if (!prog.globals.has(s)) {
                 fail self.err("unknown name \(w): a name must be defined before it is used");
-                }
+            }
+            let g: Global = glob(s);
+            arity = match (g.kind) {
+                Kind::Def => g.params.len,
+                Kind::Builtin => g.index,
+                _ => 0,
+            };
+        }
+        if (self.at_op("(")) {
+            if (arity <= 0) { fail self.err("\(w) takes no arguments"); }
+            n.op = Op::Call;
+            if (b >= 0) { n.num = 1; }
+            self.skip();
+            n.kids.push(self.expr(0)?);
+            while (self.at_op(",")) {
+                self.skip();
+                n.kids.push(self.expr(0)?);
+            }
+            self.expect_op(")")?;
+            if (n.kids.len != arity) { fail self.err("\(w) takes \(arity) arguments, not \(n.kids.len)"); }
+            return add(n);
+        }
+        if (arity > 0) { fail self.err("\(w) needs its \(arity) arguments: the subset has no operators as values"); }
+        return add(n);
+    }
+
+    // \A x \in S, y \in T : P and \E ...
+    fn quantifier(mut self: &Parser) -> i64 | ParseError {
+        var op: Op = Op::Exists;
+        if (str::eq(self.text(), "\\A")) { op = Op::Forall; }
+        var n: Node = self.node(op);
+        self.skip();
+        self.bounds(mut &n)?;
+        self.expect_op(":")?;
+        for (let s: i64 in &n.syms) { self.bind(s, -1)?; }
+        n.b = self.expr(0)?;
+        self.unbind(n.syms.len);
+        return add(n);
+    }
+
+    // x \in S, y, z \in T: into n.syms and n.kids, one set per name. Names are not bound yet,
+    // and the sets cannot use them (they are in scope only after the colon).
+    fn bounds(mut self: &Parser, mut n: &Node) -> void | ParseError {
+        while (true) {
+            if (self.at_op("<<")) { fail self.err("the subset has no tuple binders (<<x, y>> \\in S)"); }
+            var group: i64[] = [];
+            group.push(sym(self.ident()?));
+            while (self.at_op(",")) {
+                self.skip();
+                group.push(sym(self.ident()?));
+            }
+            if (!self.at_op("\\in")) { fail self.err("the subset needs bounded quantifiers (x \\in S)"); }
+            self.skip();
+            let set: i64 = self.expr(0)?;
+            for (let s: i64 in &group) {
+                n.syms.push(s);
+                n.kids.push(set);
+            }
+            if (!self.at_op(",")) { break; }
+            self.skip();
+        }
+    }
+
+    // A bullet list: /\ a  /\ b  ..., all bullets in one column.
+    fn bullets(mut self: &Parser) -> i64 | ParseError {
+        let bullet: string = self.text();
+        let col: i64 = self.toks[self.i].col;
+        var op: Op = Op::Or;
+        if (str::eq(bullet, "/\\")) { op = Op::And; }
+        var n: Node = self.node(op);
+        self.fences.push(col);
+        while (true) {
+            self.i += 1;                    // the bullet
+            n.kids.push(self.expr(0)?);
+            let t: &Token = &self.toks[self.i];
+            if (t.kind != Tk::Op || t.col != col || !str::eq(t.text, bullet)) { break; }
+        }
+        self.fences.pop();
+        let t: &Token = &self.toks[self.i];
+        if (t.kind == Tk::Op && t.col == col && (str::eq(t.text, "/\\") || str::eq(t.text, "\\/"))) {
+            fail self.err("a list of \(bullet) continued by another bullet in its column");
             }
         }
     }
