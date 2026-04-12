@@ -475,6 +475,55 @@ fn arith(op: Op, a: i64, b: i64) -> i64 | EvalError {
     }
 }
 
+fn seq_arg(v: i64, what: string) -> i64 | EvalError {
+    if (!is_seq(v)) { fail err("\(what) of \(show(v)), which is not a sequence"); }
+    return v;
+}
+
+fn builtin(w: string, args: &i64[]) -> i64 | EvalError {
+    match (w) {
+        "Len" => { return small(size(seq_arg(args[0], "Len")?)); },
+        "Append" => {
+            var out: i64[] = ys(seq_arg(args[0], "Append")?);
+            out.push(norm(args[1])?);
+            return mk_tuple(out);
+        },
+        "Head" => {
+            let s: i64 = seq_arg(args[0], "Head")?;
+            if (size(s) == 0) { fail err("Head of <<>>"); }
+            return vt.nodes[s >> 1].ys[0];
+        },
+        "Tail" => {
+            let s: i64 = seq_arg(args[0], "Tail")?;
+            if (size(s) == 0) { fail err("Tail of <<>>"); }
+            let all: i64[] = ys(s);
+            return mk_tuple(std::copy(all[1..]));
+        },
+        "SubSeq" => {
+            let s: i64 = seq_arg(args[0], "SubSeq")?;
+            let m: i64 = int(args[1])?;
+            let k: i64 = int(args[2])?;
+            if (m > k) { return mk_tuple([]); }
+            if (m < 1 || k > size(s)) { fail err("SubSeq(\(show(s)), \(m), \(k)) is out of range"); }
+            let all: i64[] = ys(s);
+            return mk_tuple(std::copy(all[m - 1..k]));
+        },
+        "Seq" => {
+            if (!is_set(args[0])) { fail err("Seq of \(show(args[0])), which is not a set"); }
+            return lazy(Tag::SeqSet, args[0], 0);
+        },
+        "Cardinality" => { return small(size(expand(args[0])?)); },
+        "IsFiniteSet" => {
+            let s: i64 = args[0];
+            if (!is_set(s)) { fail err("IsFiniteSet of \(show(s)), which is not a set"); }
+            return mk_bool(!(is_tag(s, Tag::Nat) || is_tag(s, Tag::Int) || is_tag(s, Tag::Strings) || is_tag(s, Tag::SeqSet)));
+        },
+        "Print" => {
+            println("\(show(args[0]))  \(show(args[1]))");
+        }
+    }
+}
+
 // The variables UNCHANGED e names: e is a variable, a tuple of them, or a definition of one.
 fn unchanged_vars(n: i64, mut out: &i64[]) -> void | EvalError {
     let op: Op = prog.nodes[n].op;
