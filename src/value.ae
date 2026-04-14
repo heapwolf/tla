@@ -355,6 +355,53 @@ export fn member(x: i64, s: i64) -> bool | EvalError {
     }
 }
 
+fn mix(x: i64) -> i64 {
+    var h: i64 = x *% 0x9E3779B97F4A7C15;
+    h = h ^ ((h >> 31) & 0x1FFFFFFFF);
+    h = h *% 0xBF58476D1CE4E5B9;
+    h = h ^ ((h >> 29) & 0x7FFFFFFFF);
+    return h;
+}
+
+// insertion-sorts a small array of hashes in place
+fn sort_small(mut a: &i64[]) -> void {
+    for (let i: i64 in 1..a.len) {
+        var j: i64 = i;
+        while (j > 0 && a[j - 1] > a[j]) {
+            let t: i64 = a[j];
+            a[j] = a[j - 1];
+            a[j - 1] = t;
+            j -= 1;
+        }
+    }
+}
+
+/// A 64-bit fingerprint of v with model values renamed by perm (a SYMMETRY permutation), without
+/// building the renamed value: equal renamed values have equal fingerprints. It ignores ids
+/// (strings and model values hash by text), so it survives compact. cache holds each value's
+/// fingerprint under this perm.
+export fn fingerprint(v: i64, perm: &Map(i64, i64), mut cache: &Map(i64, i64)) -> i64 {
+    if (is_int(v)) { return mix(v); }
+    if (let h = cache.get(v)) { return h; }
+    var h: i64 = 0;
+    match (tag(v)) {
+        Tag::Model => { h = mix(std::hash(&vt.nodes[(perm.get(v) ?? v) >> 1].s) +% 7); },
+        Tag::Str => { h = mix(std::hash(&vt.nodes[v >> 1].s) +% 11); },
+        Tag::Bool => { h = mix(vt.nodes[v >> 1].num +% 3); },
+        Tag::Set => {
+            var hs: i64[] = [];
+            for (let e: i64 in xs(v)) { hs.push(fingerprint(e, perm, cache)); }
+            sort_small(mut &hs);
+            h = 0x5E7;
+            for (let x: i64 in &hs) { h = mix(h ^ x); }
+        },
+        Tag::Func => {
+            var hs: i64[] = [];
+            let d: i64[] = xs(v);
+        }
+    }
+}
+
 /// s's elements, for enumeration.
 export fn elements(s: i64) -> i64[] | EvalError { return xs(expand(s)?); }
 
