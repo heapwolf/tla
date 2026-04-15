@@ -326,4 +326,7 @@ fn expect(spec: string, cfg: string, code: i64, distinct: i64, generated: i64, d
     if (expect("TwoPhaseSym", "", 0, 80, 318, 11) != 0) { return 5; }
     // DieHard's NotSolved fails after the 6 pours of the film (7 states).
     if (expect("DieHard", "", 12, 14, 73, 7) != 0) { return 3; }
+    let r: Report = check(&Options { spec: "examples/DieHard.tla" });
+    var states: i64 = 0;
+    for (let l: string in &r.out) { if (l.len > 6 && str::eq(l[0..6], "State ")) { states += 1; } }
 }
