@@ -99,6 +99,49 @@ fn binop(s: string) -> Op {
     };
 }
 
+// The standard module an operator needs, or "" if it needs none.
+fn std_of(s: string) -> string {
+    return match (s) {
+        "+" | "-" | "*" | "^" | "%" | "\\div" | ".." | "<" | ">" | "<=" | ">=" => "Naturals",
+        "\\o" => "Sequences",
+        ":>" | "@@" => "TLC",
+        _ => "",
+    };
+}
+
+fn has_std(m: string) -> bool {
+    for (let s: string in &prog.std) {
+        if (str::eq(s, m)) { return true; }
+        // Integers extends Naturals.
+        if (str::eq(m, "Naturals") && str::eq(s, "Integers")) { return true; }
+    }
+    return false;
+}
+
+// The builtins of standard module m, with arities; false if the subset lacks m.
+fn add_std(m: string) -> bool {
+    let names: string[] = match (m) {
+        "Naturals" => ["Nat"],
+        "Integers" => ["Nat", "Int"],
+        "Sequences" => ["Seq", "Len", "Append", "Head", "Tail", "SubSeq"],
+        "FiniteSets" => ["Cardinality", "IsFiniteSet"],
+        "TLC" => ["Print", "PrintT", "Assert", "ToString", "Permutations"],
+        _ => [],
+    };
+    if (names.len == 0) { return false; }
+    for (let s: string in &names) {
+        let arity: i64 = match (s) {
+            "Nat" | "Int" => 0,
+            "Append" | "Print" | "Assert" => 2,
+            "SubSeq" => 3,
+            _ => 1,
+        };
+        prog.globals.put(sym(s), Global { kind: Kind::Builtin, index: arity });
+    }
+    prog.std.push(std::copy(m));
+    return true;
+}
+
 impl Parser {
     // Whether the current token is hidden by a bullet list's fence (or is the end).
     fn fenced(self: &Parser) -> bool {
@@ -513,8 +556,89 @@ impl Parser {
         let t: &Token = &self.toks[self.i];
         if (t.kind == Tk::Op && t.col == col && (str::eq(t.text, "/\\") || str::eq(t.text, "\\/"))) {
             fail self.err("a list of \(bullet) continued by another bullet in its column");
-            }
         }
+        return add(n);
+    }
+
+    fn case_of(mut self: &Parser) -> i64 | ParseError {
+        var n: Node = self.node(Op::Case);
+        self.skip();
+        while (true) {
+            if (self.at_kw("OTHER")) {
+                self.skip();
+                self.expect_op("->")?;
+                n.c = self.expr(0)?;
+                break;
+            }
+            var arm: Node = self.node(Op::CaseArm);
+            arm.a = self.expr(0)?;
+            self.expect_op("->")?;
+            arm.b = self.expr(0)?;
+            n.kids.push(add(arm));
+            if (!self.at_op("[]")) { break; }
+            self.skip();
+        }
+        return add(n);
+    }
+
+    fn let_in(mut self: &Parser) -> i64 | ParseError {
+        var n: Node = self.node(Op::Let);
+        self.skip();
+        var defs: i64 = 0;
+        while (!self.at_kw("IN")) {
+            let d: i64 = self.definition(true)?;
+            let s: i64 = prog.nodes[d].sym;
+            let arity: i64 = prog.nodes[d].syms.len;
+            self.bind(s, arity)?;
+            defs += 1;
+            n.kids.push(d);
+        }
+        if (defs == 0) { fail self.err("a LET with no definitions"); }
+        self.skip();
+        n.b = self.expr(0)?;
+        self.unbind(defs);
+        return add(n);
+    }
+
+    // {a, b}, {x \in S : P} and {e : x \in S}.
+    fn braces(mut self: &Parser) -> i64 | ParseError {
+        var n: Node = self.node(Op::SetEnum);
+        self.skip();
+        if (self.at_op("}")) {
+            self.skip();
+            return add(n);
+        }
+        // {x \in S : P} if a colon follows S; otherwise {x \in S, ...} is a set of booleans.
+        if (self.kind() == Tk::Ident && self.then_op("\\in") && !is_keyword(self.text())) {
+            let start: i64 = self.i;
+            let x: i64 = sym(self.text());
+            self.i += 2;
+            let set: i64 = self.expr(0)?;
+            if (self.at_op(":")) {
+                self.skip();
+                n.op = Op::SetFilter;
+                n.a = set;
+                n.syms.push(x);
+                self.bind(x, -1)?;
+                n.b = self.expr(0)?;
+                self.unbind(1);
+                self.expect_op("}")?;
+                return add(n);
+            }
+            self.i = start;
+        }
+        // {e : x \in S}: read the bounds after the colon first so e can use them.
+        let colon: i64 = self.map_colon();
+        if (colon >= 0) {
+            let start: i64 = self.i;
+            n.op = Op::SetMap;
+            self.i = colon + 1;
+            self.bounds(mut &n)?;
+            let end: i64 = self.i;
+            for (let s: i64 in &n.syms) { self.bind(s, -1)?; }
+            self.i = start;
+            n.a = self.expr(0)?;
+            if (self.i != colon) { fail self.err("expected : in {e : x \\in S}"); }
     }
 }
 
