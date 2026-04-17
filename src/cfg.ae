@@ -93,6 +93,26 @@ impl Reader {
                 self.i += 1;
                 if (c.kind == Tk::Op && str::eq(c.text, "}")) { break; }
                 if (c.kind != Tk::Op || !str::eq(c.text, ",")) { fail CfgError { msg: "\(self.here()): expected , or }" }; }
+            }
+            return s;
+        }
+        fail CfgError { msg: "\(self.file):\(t.line):\(t.col): expected a constant's value, not \(t.text)" };
+    }
+
+    // Names until the next section.
+    fn names(mut self: &Reader) -> string[] {
+        var out: string[] = [];
+        while (self.at().kind == Tk::Ident && !is_section(self.at())) {
+            out.push(self.at().text);
+            self.i += 1;
+        }
+        return out;
+    }
+
+    fn one(mut self: &Reader, what: string) -> string | CfgError {
+        let ns: string[] = self.names();
+        if (ns.len != 1) { fail CfgError { msg: "\(self.here()): \(what) takes one name" }; }
+        return ns[0];
     }
 }
 
@@ -139,7 +159,43 @@ export fn read_cfg(src: string, file: string) -> Cfg | CfgError {
             "PROPERTY" | "PROPERTIES" => { for (let n: string in r.names()) { c.properties.push(n); } },
             "CHECK_DEADLOCK" => {
                 let v: CVal = r.value()?;
-            }
+                if (!str::eq(v.kind, "bool")) { fail CfgError { msg: "\(r.here()): CHECK_DEADLOCK takes TRUE or FALSE" }; }
+                c.deadlock = v.num == 1;
+            },
+            _ => {
+                fail CfgError { msg: "\(r.here()): tla has no \(s) (README.md)" };
+            },
         }
     }
+    if (c.spec.len == 0 && (c.init.len == 0 || c.act.len == 0)) {
+        fail CfgError { msg: "\(file): needs INIT and NEXT, or SPECIFICATION" };
+    }
+    if (c.spec.len > 0 && (c.init.len > 0 || c.act.len > 0)) {
+        fail CfgError { msg: "\(file): SPECIFICATION, or INIT and NEXT, not both" };
+    }
+    return c;
+}
+
+#test fn a_cfg_reads_as_tlc_writes_it() -> i32 {
+    let src: string = "\\* a model\nCONSTANTS\n  N = 3\n  Nodes = {n1, n2}\n  Lim <- Def\nINIT Init\nNEXT Next\nINVARIANTS A B\nCHECK_DEADLOCK FALSE\n";
+    match (read_cfg(src, "t.cfg")) {
+        c => {
+            if (c.names.len != 3 || c.vals[0].num != 3 || c.vals[1].elems.len != 2) { return 1; }
+            if (!str::eq(c.vals[1].elems[1].text, "n2") || !str::eq(c.vals[2].kind, "def")) { return 2; }
+            if (!str::eq(c.init, "Init") || c.invariants.len != 2 || c.deadlock) { return 3; }
+        },
+        e: CfgError => {
+            eprintln(e.msg);
+            return 4;
+        },
+    }
+    match (read_cfg("INIT I NEXT N VIEW V", "t.cfg")) {
+        c => { return 5; },
+        e: CfgError => {},
+    }
+    match (read_cfg("SPECIFICATION Spec PROPERTY Live Done", "t.cfg")) {
+        c => { if (c.properties.len != 2) { return 6; } },
+        e: CfgError => { return 7; },
+    }
+    return 0;
 }
