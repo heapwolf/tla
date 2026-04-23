@@ -245,6 +245,16 @@ export fn mk_rec(names: &string[], vals: &i64[]) -> i64 | EvalError {
     return mk_func(&d, vals);
 }
 
+export fn lazy(t: Tag, a: i64, b: i64) -> i64 { return intern(VNode { tag: t, a: a, b: b }); }
+
+export fn mk_recset(names: &string[], sets: &i64[]) -> i64 | EvalError {
+    var d: i64[] = [];
+    for (let s: string in names) { d.push(mk_str(s)); }
+    // sorted by field, like any function's domain
+    let f: i64 = mk_func(&d, sets)?;
+    return intern(VNode { tag: Tag::RecSet, xs: xs(f), ys: ys(f) });
+}
+
 /// Whether v is a set (expanded or not).
 export fn is_set(v: i64) -> bool {
     if (is_int(v)) { return false; }
@@ -400,6 +410,74 @@ export fn fingerprint(v: i64, perm: &Map(i64, i64), mut cache: &Map(i64, i64)) -
             let d: i64[] = xs(v);
         }
     }
+}
+
+let max_expand: i64 = 2000000;
+
+/// s expanded: its elements, sorted by id. An error if s is infinite, too large, or not a set.
+export fn expand(s: i64) -> i64 | EvalError {
+    if (is_int(s)) { fail EvalError { msg: "\(show(s)) is not a set" }; }
+    match (tag(s)) {
+        Tag::Set => { return s; },
+        Tag::Nat | Tag::Int | Tag::Strings | Tag::SeqSet => {
+            fail EvalError { msg: "\(show(s)) is infinite: it can only be the right of \\in" };
+        },
+        Tag::Pow => {
+            let base: i64[] = xs(expand(vt.nodes[s >> 1].a)?);
+            let n: i64 = base.len;
+            if (n > 20) { fail EvalError { msg: "SUBSET of a set of \(n) elements is too large to list" }; }
+            var out: i64[] = [];
+            for (let m: i64 in 0..(1 << n)) {
+                var e: i64[] = [];
+                for (let i: i64 in 0..n) {
+                    if (((m >> i) & 1) == 1) { e.push(base[i]); }
+                }
+                out.push(mk_set_sorted(e));
+            }
+            return mk_set(out);
+        },
+        Tag::FnSet => {
+            let dom: i64[] = xs(expand(vt.nodes[s >> 1].a)?);
+            let rng: i64[] = xs(expand(vt.nodes[s >> 1].b)?);
+            var sets: i64[] = [];
+            for (let d: i64 in &dom) { sets.push(mk_set_sorted(std::copy(rng))); }
+            return product(&dom, &sets);
+        },
+        Tag::RecSet => {
+            let dom: i64[] = xs(s);
+            var sets: i64[] = [];
+            for (let e: i64 in ys(s)) { sets.push(expand(e)?); }
+            return product(&dom, &sets);
+        },
+        _ => { fail EvalError { msg: "\(show(s)) is not a set" }; },
+    }
+}
+
+// Every function from dom (sorted) with f[dom[i]] \in sets[i] (expanded sets).
+fn product(dom: &i64[], sets: &i64[]) -> i64 | EvalError {
+    var total: i64 = 1;
+    for (let s: i64 in sets) {
+        total *= size(s);
+        if (total > max_expand) { fail EvalError { msg: "a set of more than \(max_expand) functions or records is too large to list" }; }
+    }
+    var out: i64[] = [];
+    let n: i64 = dom.len;
+    var pick: i64[n];
+    if (total == 0) { return mk_set_sorted([]); }
+    while (true) {
+        var r: i64[] = [];
+        for (let i: i64 in 0..n) { r.push(vt.nodes[sets[i] >> 1].xs[pick[i]]); }
+        out.push(mk_func_sorted(std::copy(*dom), r));
+        var i: i64 = n - 1;
+        while (i >= 0) {
+            pick[i] += 1;
+            if (pick[i] < size(sets[i])) { break; }
+            pick[i] = 0;
+            i -= 1;
+        }
+        if (i < 0) { break; }
+    }
+    return mk_set(out);
 }
 
 /// s's elements, for enumeration.
