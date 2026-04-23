@@ -520,6 +520,20 @@ fn builtin(w: string, args: &i64[]) -> i64 | EvalError {
         },
         "Print" => {
             println("\(show(args[0]))  \(show(args[1]))");
+            return args[1];
+        },
+        "PrintT" => {
+            println(show(args[0]));
+            return TRUE;
+        },
+        "Assert" => {
+            if (!boolean(args[0])?) { fail err("Assert failed: \(show(args[1]))"); }
+            return TRUE;
+        },
+        "ToString" => { return mk_str(show(args[0])); },
+        "Permutations" => {
+            let s: i64[] = elements(args[0])?;
+            if (s.len > 8) { fail err("Permutations of \(s.len) elements is too many"); }
         }
     }
 }
