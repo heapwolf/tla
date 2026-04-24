@@ -37,6 +37,18 @@ fn main(args: string[]) -> i32 {
                 "-depth" => { o.depth = n; },
                 _ => { o.seed = n; },
             }
+            i += 2;
+            continue;
+        }
+        if (str::eq(a, "-deadlock")) {
+            o.deadlock = false;
+        } else if (str::eq(a, "-progress")) {
+            o.progress = true;
+        } else if (a.len > 0 && a[0] == '-') {
+            eprintln("tla: unknown flag \(a)");
+            return 150;
+        } else if (o.spec.len == 0) {
+            o.spec = a;
         }
     }
 }

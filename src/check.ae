@@ -303,6 +303,30 @@ fn run(o: &Options, c: &Cfg, mut r: &Report) -> void | EvalError {
             var perm: Map(i64, i64) = Map {};
             let dom: i64[] = xs(f);
             let rng: i64[] = ys(f);
+            for (let i: i64 in 0..dom.len) {
+                if (!is_tag(dom[i], Tag::Model) || !is_tag(rng[i], Tag::Model)) {
+                    say(r, "Error: SYMMETRY \(c.symmetry) renames \(show(dom[i])): only model values may be renamed");
+                    r.code = 150;
+                    return;
+                }
+                perm.put(dom[i], rng[i]);
+            }
+            s.perms.push(perm);
+            s.caches.push(Map {});
+        }
+        s.sym = true;
+    }
+    if (s.perms.len == 0) {
+        // (without SYMMETRY: a state's own fingerprint)
+        s.perms.push(Map {});
+        s.caches.push(Map {});
+    }
+    s.init = init;
+    s.act = act;
+    if (c.properties.len > 0) {
+        if (s.sym) {
+            say(r, "Error: PROPERTY with SYMMETRY: states equal up to renaming fall together, which fairness for each of them (\\A r : WF(A(r))) can't be checked on. Leave SYMMETRY out of a cfg with a PROPERTY");
+            r.code = 150;
         }
     }
 }
