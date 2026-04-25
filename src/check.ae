@@ -327,6 +327,18 @@ fn run(o: &Options, c: &Cfg, mut r: &Report) -> void | EvalError {
         if (s.sym) {
             say(r, "Error: PROPERTY with SYMMETRY: states equal up to renaming fall together, which fairness for each of them (\\A r : WF(A(r))) can't be checked on. Leave SYMMETRY out of a cfg with a PROPERTY");
             r.code = 150;
+            return;
+        }
+        if (o.simulate > 0) {
+            say(r, "Error: PROPERTY is checked by a search of every state, not by -simulate");
+            r.code = 150;
+            return;
+        }
+        for (let n: string in &c.properties) {
+            let d: i64 = named(n, "PROPERTY", r);
+            if (d < 0) { return; }
+            let body: i64 = glob(sym(n)).body;
+            let nd: Node = std::copy(prog.nodes[body]);
         }
     }
 }
