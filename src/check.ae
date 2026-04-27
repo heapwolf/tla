@@ -366,3 +366,18 @@ fn expect(spec: string, cfg: string, code: i64, distinct: i64, generated: i64, d
     var states: i64 = 0;
     for (let l: string in &r.out) { if (l.len > 6 && str::eq(l[0..6], "State ")) { states += 1; } }
 }
+
+#test fn the_semantics_hold() -> i32 {
+    // Each ASSUME in Semantics.tla is a TLA+ fact; a false one would give code 10.
+    return expect("Semantics", "", 0, 1, 2, 1);
+}
+
+// Checks module body (named m) with cfg in a temp directory; returns the exit code.
+fn code_of(m: string, body: string, cfg: string) -> i64 {
+    let dir: string = fs::temp_dir();
+    let spec: string = "\(dir)/\(m).tla";
+    fs::write_file(spec, "---- MODULE \(m) ----\n\(body)\n====\n");
+    fs::write_file("\(dir)/\(m).cfg", cfg);
+    let r: Report = check(&Options { spec: spec });
+    return r.code;
+}
