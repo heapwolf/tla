@@ -639,7 +639,48 @@ impl Parser {
             self.i = start;
             n.a = self.expr(0)?;
             if (self.i != colon) { fail self.err("expected : in {e : x \\in S}"); }
+            self.i = end;
+            self.unbind(n.syms.len);
+            self.expect_op("}")?;
+            return add(n);
+        }
+        n.kids.push(self.expr(0)?);
+        while (self.at_op(",")) {
+            self.skip();
+            n.kids.push(self.expr(0)?);
+        }
+        self.expect_op("}")?;
+        return add(n);
     }
+
+    // Index of the colon of {e : x \in S} from here, or -1. Colons taken by a quantifier or
+    // CHOOSE in e, or inside brackets, do not count.
+    fn map_colon(self: &Parser) -> i64 {
+        var depth: i64 = 0;
+        var owed: i64 = 0;                  // colons owed to quantifiers in e
+        var j: i64 = self.i;
+        while (j < self.toks.len) {
+            let t: &Token = &self.toks[j];
+            if (t.kind == Tk::Eof) { return -1; }
+            if (t.kind == Tk::Op) {
+                match (t.text) {
+                    "(" | "[" | "{" | "<<" => { depth += 1; },
+                    ")" | "]" | ">>" => { depth -= 1; },
+                    "}" => {
+                        if (depth == 0) { return -1; }
+                        depth -= 1;
+                    },
+                    "\\A" | "\\E" => { if (depth == 0) { owed += 1; } },
+                    ":" => {
+                        if (depth == 0) {
+                            if (owed == 0) { return j; }
+                            owed -= 1;
+                        }
+                    },
+                    _ => {},
+                }
+            } else if (t.kind == Tk::Ident && str::eq(t.text, "CHOOSE") && depth == 0) {
+                owed += 1;
 }
 
 // Parses src (from file, in directory dir) into prog.
