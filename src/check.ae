@@ -339,6 +339,19 @@ fn run(o: &Options, c: &Cfg, mut r: &Report) -> void | EvalError {
             if (d < 0) { return; }
             let body: i64 = glob(sym(n)).body;
             let nd: Node = std::copy(prog.nodes[body]);
+            if (nd.op == Op::LeadsTo) {
+                s.props.push(Prop { name: n, p: nd.a, q: nd.b });
+            } else if (nd.op == Op::Box && prog.nodes[nd.a].op == Op::Diamond) {
+                s.props.push(Prop { name: n, p: -1, q: prog.nodes[nd.a].a });
+            } else if (nd.op == Op::Diamond) {
+                s.props.push(Prop { name: n, p: -2, q: nd.a });
+            } else {
+                say(r, "Error: the PROPERTY \(n) must be P ~> Q, []<>Q or <>Q, with P and Q state predicates");
+                r.code = 150;
+                return;
+            }
+            let pr: Prop = std::copy(s.props[s.props.len - 1]);
+            var seen: Map(i64, i64) = Map {};
         }
     }
 }
