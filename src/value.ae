@@ -619,3 +619,47 @@ export fn show(v: i64) -> string {
         }
     }
 }
+
+fn check_values() -> i32 | EvalError {
+    reset();
+    let one: i64 = mk_int(1)?;
+    let two: i64 = mk_int(2)?;
+    let a: i64 = mk_set([two, one, two]);
+    let b: i64 = mk_set([one, two]);
+    if (a != b || size(a) != 2) { return 1; }
+    if (!str::eq(show(a), "{1, 2}")) { return 2; }
+    // <<1, 2>> is the function on 1..2
+    let t: i64 = mk_tuple([one, two]);
+    let f: i64 = mk_func(&[two, one], &[two, one])?;
+    if (t != f || !str::eq(show(t), "<<1, 2>>")) { return 3; }
+    let names: string[] = ["b", "a"];
+    let r: i64 = mk_rec(&names, &[one, mk_str("x")])?;
+    if (!str::eq(show(r), "[a |-> \"x\", b |-> 1]")) { return 4; }
+    if (apply(r, mk_str("b"))? != one) { return 5; }
+    if (!member(one, b)? || member(mk_int(3)?, b)?) { return 6; }
+    // SUBSET {1, 2} has 4 elements, and {1} is in it without expanding it
+    let p: i64 = lazy(Tag::Pow, b, 0);
+    if (!member(mk_set([one]), p)?) { return 7; }
+    if (size(expand(p)?) != 4) { return 8; }
+    // [{1, 2} -> {1, 2}] has 4 functions; [a : {1, 2}] has 2 records
+    if (size(expand(lazy(Tag::FnSet, b, b))?) != 4) { return 9; }
+    let rs: i64 = mk_recset(&["a"], &[b])?;
+    if (size(expand(rs)?) != 2) { return 10; }
+    if (update(t, two, one)? != mk_tuple([one, one])) { return 11; }
+    match (mk_int(4611686018427387904)) {
+        v => { return 12; },
+        e: EvalError => {},
+    }
+    if (!str::eq(show(mk_func(&[mk_model("n1")], &[one])?), "(n1 :> 1)")) { return 13; }
+    return 0;
+}
+
+#test fn values_are_interned_and_canonical() -> i32 {
+    match (check_values()) {
+        r => { return r; },
+        e: EvalError => {
+            eprintln(e.msg);
+            return 99;
+        },
+    }
+}
