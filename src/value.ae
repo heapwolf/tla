@@ -365,6 +365,32 @@ export fn member(x: i64, s: i64) -> bool | EvalError {
     }
 }
 
+/// v with each model value m renamed perm[m] (a SYMMETRY permutation). cache maps each v
+/// already renamed under this perm to its result.
+export fn rename(v: i64, perm: &Map(i64, i64), mut cache: &Map(i64, i64)) -> i64 | EvalError {
+    if (is_int(v)) { return v; }
+    if (let w = cache.get(v)) { return w; }
+    var out: i64 = v;
+    match (tag(v)) {
+        Tag::Model => { out = perm.get(v) ?? v; },
+        Tag::Set => {
+            var elems: i64[] = [];
+            for (let e: i64 in xs(v)) { elems.push(rename(e, perm, cache)?); }
+            out = mk_set(elems);
+        },
+        Tag::Func => {
+            var d: i64[] = [];
+            var r: i64[] = [];
+            for (let e: i64 in xs(v)) { d.push(rename(e, perm, cache)?); }
+            for (let e: i64 in ys(v)) { r.push(rename(e, perm, cache)?); }
+            out = mk_func(&d, &r)?;
+        },
+        _ => {},
+    }
+    cache.put(v, out);
+    return out;
+}
+
 fn mix(x: i64) -> i64 {
     var h: i64 = x *% 0x9E3779B97F4A7C15;
     h = h ^ ((h >> 31) & 0x1FFFFFFFF);
