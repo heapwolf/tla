@@ -76,6 +76,29 @@ struct Search {
     compact_min: i64 = 1000000;         //   and at least this many (Options.compact_at).
     // The state graph for PROPERTY (live), by state, in explored order.
     live: bool = false;
+    fairs: Fairness[] = [];
+    props: Prop[] = [];
+    succ: i64[][] = [];                 // Its successors (indices).
+    steps: i64[][] = [];                // Per successor: fairness conditions it's a step of (bits).
+    enabled: i64[] = [];                // The fairness conditions enabled in it (bits).
+    pq: i64[] = [];                     // Bit 2i: props[i].p holds in it; bit 2i + 1: props[i].q.
+    out: bool[] = [];                   // Outside the CONSTRAINT: not explored.
+}
+
+// st's canonical form: its least fingerprint under SYMMETRY's permutations (without SYMMETRY,
+// its fingerprint), as in TLC: two states merge only if equal up to renaming or their
+// fingerprints collide (the report gives the odds).
+fn canonical(mut s: &Search, st: i64) -> i64 {
+    var best: i64 = 9223372036854775807;
+    for (let i: i64 in 0..s.perms.len) {
+        let h: i64 = fingerprint(st, &s.perms[i], mut &s.caches[i]);
+        if (h < best) { best = h; }
+    }
+    // caches only speed things up: empty them before they grow too large
+    if (s.caches[0].len() > 4000000) {
+        for (let i: i64 in 0..s.caches.len) { s.caches[i] = Map {}; }
+    }
+    return best;
 }
 
 fn say(mut r: &Report, line: string) -> void { r.out.push(line); }

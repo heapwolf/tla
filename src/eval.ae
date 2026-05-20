@@ -534,7 +534,26 @@ fn builtin(w: string, args: &i64[]) -> i64 | EvalError {
         "Permutations" => {
             let s: i64[] = elements(args[0])?;
             if (s.len > 8) { fail err("Permutations of \(s.len) elements is too many"); }
+            var out: i64[] = [];
+            var perm: i64[] = std::copy(s);
+            permute(mut &perm, 0, &s, mut &out)?;
         }
+    }
+}
+
+// Every permutation of perm[k..] after perm[..k], as a function from s, into out.
+fn permute(mut perm: &i64[], k: i64, s: &i64[], mut out: &i64[]) -> void | EvalError {
+    if (k == perm.len) {
+        out.push(mk_func(s, perm)?);
+        return;
+    }
+    for (let i: i64 in k..perm.len) {
+        let t: i64 = perm[k];
+        perm[k] = perm[i];
+        perm[i] = t;
+        permute(perm, k + 1, s, out)?;
+        perm[i] = perm[k];
+        perm[k] = t;
     }
 }
 
