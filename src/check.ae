@@ -401,6 +401,8 @@ fn expect(spec: string, cfg: string, code: i64, distinct: i64, generated: i64, d
     let r: Report = check(&Options { spec: "examples/DieHard.tla" });
     var states: i64 = 0;
     for (let l: string in &r.out) { if (l.len > 6 && str::eq(l[0..6], "State ")) { states += 1; } }
+    if (states != 7) { return 4; }
+    return 0;
 }
 
 #test fn the_semantics_hold() -> i32 {
