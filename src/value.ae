@@ -434,8 +434,26 @@ export fn fingerprint(v: i64, perm: &Map(i64, i64), mut cache: &Map(i64, i64)) -
         Tag::Func => {
             var hs: i64[] = [];
             let d: i64[] = xs(v);
-        }
+            let r: i64[] = ys(v);
+            for (let i: i64 in 0..d.len) {
+                hs.push(mix(fingerprint(d[i], perm, cache) *% 31 +% fingerprint(r[i], perm, cache)));
+            }
+            sort_small(mut &hs);
+            h = 0xF0C;
+            for (let x: i64 in &hs) { h = mix(h ^ x); }
+        },
+        _ => {
+            // an unexpanded set (Nat, SUBSET a, [a -> b], ...): its tag and parts, in order
+            let nd: VNode = std::copy(vt.nodes[v >> 1]);
+            h = mix((nd.tag as i64) +% 0x5E75);
+            for (let x: i64 in &nd.xs) { h = mix(h ^ fingerprint(x, perm, cache)); }
+            for (let y: i64 in &nd.ys) { h = mix(h ^ fingerprint(y, perm, cache)); }
+            h = mix(h ^ fingerprint(nd.a, perm, cache));
+            h = mix(h ^ fingerprint(nd.b, perm, cache));
+        },
     }
+    cache.put(v, h);
+    return h;
 }
 
 let max_expand: i64 = 2000000;
