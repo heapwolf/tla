@@ -375,7 +375,18 @@ fn run(o: &Options, c: &Cfg, mut r: &Report) -> void | EvalError {
             }
             let pr: Prop = std::copy(s.props[s.props.len - 1]);
             var seen: Map(i64, i64) = Map {};
+            if (!state_predicate(pr.q, mut &seen) || (pr.p >= 0 && !state_predicate(pr.p, mut &seen))) {
+                say(r, "Error: the PROPERTY \(n) must be P ~> Q, []<>Q or <>Q, with P and Q state predicates (no primes, UNCHANGED or temporal operators)");
+                r.code = 150;
+                return;
+            }
         }
+        if (s.props.len > 31) {
+            say(r, "Error: at most 31 PROPERTY a cfg");
+            r.code = 150;
+            return;
+        }
+        reset_envs();
     }
 }
 

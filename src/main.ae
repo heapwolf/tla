@@ -49,6 +49,13 @@ fn main(args: string[]) -> i32 {
             return 150;
         } else if (o.spec.len == 0) {
             o.spec = a;
+        } else {
+            eprintln("tla: one spec at a time");
+            return 150;
         }
+        i += 1;
+    }
+    if (o.spec.len == 0) {
+        eprintln("usage: tla Spec.tla [-config Spec.cfg] [-deadlock] [-progress] [-maxstates N] [-maxvalues N] [-simulate N] [-depth D] [-seed S]");
     }
 }
