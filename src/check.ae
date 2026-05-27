@@ -237,6 +237,15 @@ export fn check(o: &Options) -> Report {
         r.code = 150;
         return r;
     }
+    var c: Cfg = Cfg {};
+    match (read_cfg(csrc, cfg_path)) {
+        v => { c = v; },
+        e: CfgError => {
+            say(mut &r, "Error: \(e.msg)");
+            r.code = 150;
+            return r;
+        },
+    }
 }
 
 fn run(o: &Options, c: &Cfg, mut r: &Report) -> void | EvalError {
