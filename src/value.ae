@@ -103,6 +103,63 @@ export fn reset() -> void {
     intern(VNode { tag: Tag::Bool, num: 1 });
 }
 
+// v's id after compact, given each old node's new index (to)
+fn moved(v: i64, to: &i64[]) -> i64 {
+    if (is_int(v)) { return v; }
+    return to[v >> 1] * 2;
+}
+
+/// Keeps only values reachable from roots (plus FALSE and TRUE) and renumbers them in their old
+/// order, so sets' elements and functions' domains stay sorted by id and canonical. roots get
+/// their new ids; all other held ids become invalid.
+export fn compact(mut roots: &i64[]) -> void {
+    let n: i64 = vt.nodes.len;
+    var live: bool[n];
+    var todo: i64[] = std::copy(*roots);
+    todo.push(FALSE);
+    todo.push(TRUE);
+    var at: i64 = 0;
+    while (at < todo.len) {
+        let v: i64 = todo[at];
+        at += 1;
+        if (at > 1000000 && at * 2 > todo.len) {
+            todo = std::copy(todo[at..todo.len]);           // (drop ids already taken)
+            at = 0;
+        }
+        if (is_int(v) || live[v >> 1]) { continue; }
+        live[v >> 1] = true;
+        let nd: &VNode = &vt.nodes[v >> 1];
+        for (let x: i64 in &nd.xs) { todo.push(x); }
+        for (let y: i64 in &nd.ys) { todo.push(y); }
+        todo.push(nd.a);
+        todo.push(nd.b);
+    }
+    var to: i64[n];
+    var j: i64 = 0;
+    for (let k: i64 in 0..n) {
+        if (live[k]) {
+            to[k] = j;
+            j += 1;
+        }
+    }
+    // in place: node k moves down to to[k] <= k, over a moved or dead node
+    for (let k: i64 in 0..n) {
+        if (!live[k]) { continue; }
+        var nd: VNode = std::copy(vt.nodes[k]);
+        for (let i: i64 in 0..nd.xs.len) { nd.xs[i] = moved(nd.xs[i], &to); }
+        for (let i: i64 in 0..nd.ys.len) { nd.ys[i] = moved(nd.ys[i], &to); }
+        nd.a = moved(nd.a, &to);
+        nd.b = moved(nd.b, &to);
+        vt.nodes[to[k]] = nd;
+    }
+    while (vt.nodes.len > j) { vt.nodes.pop(); }
+    vt.count = j;
+    var cap: i64 = 1024;
+    while (cap * 3 < j * 8) { cap *= 2; }          // (filled to 3/8: grows only past 3/4)
+    rehash(cap);
+    for (let i: i64 in 0..roots.len) { roots[i] = moved(roots[i], &to); }
+}
+
 export fn is_int(v: i64) -> bool { return (v & 1) == 1; }
 export fn int_of(v: i64) -> i64 { return v >> 1; }
 
