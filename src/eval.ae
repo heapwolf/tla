@@ -75,6 +75,39 @@ export fn start(consts: i64[]) -> void {
 /// Empties the environment arena.
 export fn reset_envs() -> void { cx.envs = Envs {}; }
 
+/// Pushes onto out the values the evaluator keeps between evaluations: the constants', then
+/// the constant definitions' (value::compact's roots).
+export fn value_roots(mut out: &i64[]) -> void {
+    for (let v: i64 in &cx.consts) { out.push(v); }
+    for (let s: i64 in 0..cx.memo.cap()) {
+        if (cx.memo.full(s)) { out.push(cx.memo.entry(s).val); }
+    }
+}
+
+/// After value::compact renumbers value_roots' values, takes them back from roots, starting at
+/// at; returns where they end. Drops what an evaluation leaves (found states, environments).
+export fn reroot(roots: &i64[], at: i64) -> i64 {
+    var i: i64 = at;
+    for (let k: i64 in 0..cx.consts.len) {
+        cx.consts[k] = roots[i];
+        i += 1;
+    }
+    var memo: Map(i64, i64) = Map {};
+    for (let s: i64 in 0..cx.memo.cap()) {
+        if (cx.memo.full(s)) {
+            memo.put(cx.memo.entry(s).key, roots[i]);
+            i += 1;
+        }
+    }
+    cx.memo = memo;
+    for (let k: i64 in 0..cx.cur.len) { cx.cur[k] = UNSET; }
+    for (let k: i64 in 0..cx.nxt.len) { cx.nxt[k] = UNSET; }
+    cx.found = [];
+    cx.labels = [];
+    reset_envs();
+    return i;
+}
+
 fn bind(s: i64, v: i64, kind: i64, parent: i64) -> i64 {
     cx.envs.syms.push(s);
     cx.envs.vals.push(v);
