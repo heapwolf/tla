@@ -103,6 +103,65 @@ fn canonical(mut s: &Search, st: i64) -> i64 {
 
 fn say(mut r: &Report, line: string) -> void { r.out.push(line); }
 
+// Frees values held only by explored states (value::compact). Kept and renumbered: queued
+// states (from head on), the evaluator's values, and the model values SYMMETRY renames.
+// Fingerprints are not ids, so they stay.
+fn let_go(mut s: &Search, head: i64) -> void {
+    var roots: i64[] = [];
+    for (let k: i64 in head..s.states.len) { roots.push(s.states[k]); }
+    value_roots(mut &roots);
+    for (let j: i64 in 0..s.perms.len) {
+        for (let i: i64 in 0..s.perms[j].cap()) {
+            if (s.perms[j].full(i)) {
+                roots.push(s.perms[j].entry(i).key);
+                roots.push(s.perms[j].entry(i).val);
+            }
+        }
+    }
+    for (let f: &Fairness in &s.fairs) { for (let v: i64 in &f.vals) { roots.push(v); } }
+    compact(mut &roots);
+    var at: i64 = 0;
+    for (let k: i64 in head..s.states.len) {
+        s.states[k] = roots[at];
+        at += 1;
+    }
+    at = reroot(&roots, at);
+    for (let j: i64 in 0..s.perms.len) {
+        var perm: Map(i64, i64) = Map {};
+        for (let i: i64 in 0..s.perms[j].cap()) {
+            if (s.perms[j].full(i)) {
+                perm.put(roots[at], roots[at + 1]);
+                at += 2;
+            }
+        }
+        s.perms[j] = perm;
+        s.caches[j] = Map {};
+    }
+    for (let i: i64 in 0..s.fairs.len) {
+        for (let j: i64 in 0..s.fairs[i].vals.len) {
+            s.fairs[i].vals[j] = roots[at];
+            at += 1;
+        }
+    }
+    s.compact_at = 2 * vt.nodes.len;
+    if (s.compact_at < s.compact_min) { s.compact_at = s.compact_min; }
+}
+
+// The process's resident memory from /proc (Linux), else "".
+fn rss() -> string {
+    let st: string = fs::read_file("/proc/self/status") ?? "";
+    var i: i64 = 0;
+    while (i + 6 < st.len) {
+        if (str::eq(st[i..i + 6], "VmRSS:")) {
+            var j: i64 = i;
+            while (j < st.len && st[j] != '\n') { j += 1; }
+            return st[i..j];
+        }
+        i += 1;
+    }
+    return "";
+}
+
 fn show_state(st: i64) -> string[] {
     var lines: string[] = [];
     let vals: i64[] = ys(st);
@@ -422,6 +481,24 @@ fn expect(spec: string, cfg: string, code: i64, distinct: i64, generated: i64, d
     var states: i64 = 0;
     for (let l: string in &r.out) { if (l.len > 6 && str::eq(l[0..6], "State ")) { states += 1; } }
     if (states != 7) { return 4; }
+    return 0;
+}
+
+// The same searches, freeing explored states' values every step: counts and trace must not
+// change (fingerprints don't depend on ids, and the trace is rebuilt).
+#test fn letting_go_of_explored_states_changes_nothing() -> i32 {
+    let names: string[] = ["TCommit", "TwoPhase", "TwoPhaseSym", "DieHard"];
+    for (let i: i64 in 0..names.len) {
+        let spec: string = "examples/\(names[i]).tla";
+        let a: Report = check(&Options { spec: spec });
+        let b: Report = check(&Options { spec: spec, compact_at: 1 });
+        if (a.code != b.code || a.distinct != b.distinct || a.generated != b.generated || a.depth != b.depth) {
+            eprintln("\(names[i]): \(a.code) \(a.distinct) \(a.generated) \(a.depth), compacting: \(b.code) \(b.distinct) \(b.generated) \(b.depth)");
+            return (i + 1) as i32;
+        }
+        if (a.out.len != b.out.len) { return (10 + i) as i32; }
+        for (let j: i64 in 0..a.out.len) { if (!str::eq(a.out[j], b.out[j])) { return (20 + i) as i32; } }
+    }
     return 0;
 }
 
