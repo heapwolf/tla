@@ -265,6 +265,100 @@ fn found(mut s: &Search, st: i64, parent: i64, label: string, invs: &i64[], inv_
     return true;
 }
 
+// xorshift64*: random numbers for the walks, from the seed
+fn rand(mut x: &i64) -> i64 {
+    var v: i64 = *x;
+    v = v ^ ((v >> 12) & 0xFFFFFFFFFFFFF);
+    v = v ^ (v << 25);
+    v = v ^ ((v >> 27) & 0x1FFFFFFFFF);
+    *x = v;
+    return (v *% 0x2545F4914F6CDD1D) & 0x7FFFFFFFFFFFFFFF;
+}
+
+// The trace of a walk: its states and how each was reached.
+fn walk_trace(states: &i64[], labels: &string[], mut r: &Report) -> void {
+    say(r, "Error: The behavior up to this point is:");
+    for (let i: i64 in 0..states.len) {
+        var label: string = labels[i];
+        if (label.len == 0) { label = "Next"; }
+        say(r, "State \(i + 1): <\(label)>");
+        for (let l: string in show_state(states[i])) { say(r, l); }
+        say(r, "");
+    }
+}
+
+// Simulation (TLC's -simulate): o.simulate random behaviors from the initial states, each at
+// most o.depth steps (fewer if stopped: no successor, or outside a CONSTRAINT), checking every
+// state against the invariants. Finds deep bugs in models too large to search but proves
+// nothing: only a search passes a model.
+fn simulate(
+    o: &Options, init: i64, act: i64, invs: &i64[], inv_names: &string[], cons: &i64[],
+    deadlock: bool, mut r: &Report
+) -> void | EvalError {
+    var x: i64 = o.seed *% 0x9E3779B97F4A7C15;
+    if (x == 0) { x = 1; }
+    reset_envs();
+    initial(init)?;
+    let firsts: i64[] = std::copy(cx.found);
+    if (firsts.len == 0) {
+        say(r, "Error: Init has no states");
+        r.code = 75;
+        return;
+    }
+    var steps: i64 = 0;
+    var keep: i64[] = std::copy(firsts);
+    for (let b: i64 in 0..o.simulate) {
+        // Every 1000 behaviors, free the last ones' values (value::compact), keeping only the
+        // initial states and the evaluator's values.
+        if (b % 1000 == 999) {
+            var roots: i64[] = std::copy(keep);
+            value_roots(mut &roots);
+            compact(mut &roots);
+            for (let i: i64 in 0..keep.len) { keep[i] = roots[i]; }
+            reroot(&roots, keep.len);
+        }
+        var states: i64[] = [];
+        var labels: string[] = [];
+        var st: i64 = keep[rand(mut &x) % keep.len];
+        states.push(st);
+        labels.push("Initial predicate");
+        while (true) {
+            steps += 1;
+            for (let i: i64 in 0..invs.len) {
+                if (!holds(st, invs[i])?) {
+                    say(r, "Error: Invariant \(inv_names[i]) is violated (behavior \(b + 1) of seed \(o.seed)).");
+                    walk_trace(&states, &labels, r);
+                    r.code = 12;
+                    r.generated = steps;
+                    return;
+                }
+            }
+            if (states.len > o.depth) { break; }
+            var inside: bool = true;
+            for (let p: i64 in cons) { if (!holds(st, p)?) { inside = false; } }
+            if (!inside) { break; }
+            successors(st, act)?;
+            let n: i64 = cx.found.len;
+            if (n == 0) {
+                if (deadlock) {
+                    say(r, "Error: Deadlock reached (behavior \(b + 1) of seed \(o.seed)).");
+                    walk_trace(&states, &labels, r);
+                    r.code = 11;
+                    return;
+                }
+                break;
+            }
+            let k: i64 = rand(mut &x) % n;
+            st = cx.found[k];
+            states.push(st);
+            labels.push(std::copy(cx.labels[k]));
+        }
+        if (o.progress && (b + 1) % 1000 == 0) { eprintln("progress: \(b + 1) behaviors, \(steps) states"); }
+    }
+    r.generated = steps;
+    say(r, "Simulation finished: \(o.simulate) behaviors of at most \(o.depth) steps, \(steps) states checked, seed \(o.seed). No error has been found (which proves nothing: only a search does).");
+}
+
 /// Checks the spec in o.spec against its cfg.
 export fn check(o: &Options) -> Report {
     var r: Report = Report {};

@@ -57,5 +57,9 @@ fn main(args: string[]) -> i32 {
     }
     if (o.spec.len == 0) {
         eprintln("usage: tla Spec.tla [-config Spec.cfg] [-deadlock] [-progress] [-maxstates N] [-maxvalues N] [-simulate N] [-depth D] [-seed S]");
+        return 150;
     }
+    let r: Report = check(&o);
+    for (let l: string in &r.out) { println(l); }
+    return r.code as i32;
 }
