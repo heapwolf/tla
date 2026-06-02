@@ -173,6 +173,47 @@ fn var_value(index: i64, primed: bool) -> i64 | EvalError {
     return cx.cur[index];
 }
 
+// Whether definition s cannot depend on the state. A recursive definition counts as constant
+// while being examined (largest fixed point); a "constant" result under that assumption is kept
+// only once the outermost definition is done, a "not constant" one at once (it found a variable).
+export fn constant_def(s: i64) -> bool {
+    if (let c = cx.level.get(s)) { return c; }
+    if (cx.visiting.has(s)) { return true; }
+    cx.visiting.add(s);
+    let g: Global = glob(s);
+    let c: bool = constant_node(g.body);
+    cx.visiting.remove(s);
+    if (!c || cx.visiting.len() == 0) { cx.level.put(s, c); }
+    return c;
+}
+
+/// Whether node n cannot depend on the state.
+export fn constant_node(n: i64) -> bool {
+    if (n < 0) { return true; }
+    let nd: &Node = &prog.nodes[n];
+    match (nd.op) {
+        Op::Prime | Op::Unchanged => { return false; },
+        Op::Global | Op::Call => {
+            if (nd.op == Op::Call && nd.num == 1) {
+                // a LET definition: its body is in this tree
+            } else {
+                let g: Global = glob(nd.sym);
+                if (g.kind == Kind::Var) { return false; }
+                if (g.kind == Kind::Def && !constant_def(nd.sym)) { return false; }
+                if (g.kind == Kind::Builtin) {
+                    // Print and Assert are effects; keep them in place.
+                    let w: string = name(nd.sym);
+                    if (str::eq(w, "Print") || str::eq(w, "PrintT") || str::eq(w, "Assert")) { return false; }
+                }
+            }
+        },
+        _ => {},
+    }
+    if (!constant_node(nd.a) || !constant_node(nd.b) || !constant_node(nd.c)) { return false; }
+    for (let k: i64 in &nd.kids) { if (!constant_node(k)) { return false; } }
+    return true;
+}
+
 // The values of n's bounds (syms over kids), each an expanded set.
 fn bound_sets(n: i64, env: i64) -> i64[][] | EvalError {
     var sets: i64[][] = [];
