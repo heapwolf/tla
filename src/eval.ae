@@ -135,6 +135,21 @@ export fn where_at() -> string {
     return prog.module;
 }
 
+// v as a variable's value: finite at every depth, as TLC needs to store it.
+fn storable(v: i64) -> i64 | EvalError {
+    let w: i64 = norm(v)?;
+    if (is_int(w)) { return w; }
+    match (tag(w)) {
+        Tag::Nat | Tag::Int | Tag::Strings | Tag::SeqSet => {
+            fail err("a variable cannot hold the infinite set \(show(w))");
+        },
+        Tag::Set => { for (let e: i64 in xs(w)) { storable(e)?; } },
+        Tag::Func => { for (let e: i64 in ys(w)) { storable(e)?; } },
+        _ => {},
+    }
+    return w;
+}
+
 // A finite lazy set is expanded before going into a value, so equal values keep equal ids.
 fn norm(v: i64) -> i64 | EvalError {
     if (is_int(v)) { return v; }
