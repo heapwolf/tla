@@ -681,6 +681,65 @@ impl Parser {
                 }
             } else if (t.kind == Tk::Ident && str::eq(t.text, "CHOOSE") && depth == 0) {
                 owed += 1;
+            }
+            j += 1;
+        }
+        return -1;
+    }
+
+    // [x \in S |-> e], [S -> T], [a |-> e], [a : S], [f EXCEPT ...] and [A]_v.
+    fn brackets(mut self: &Parser) -> i64 | ParseError {
+        var n: Node = self.node(Op::RecCons);
+        self.skip();
+        let word: bool = self.kind() == Tk::Ident && !is_keyword(self.text());
+        if (word && (self.then_op("|->") || self.then_op(":"))) {
+            var sep: string = "|->";
+            if (self.then_op(":")) {
+                n.op = Op::RecSet;
+                sep = ":";
+            }
+            while (true) {
+                let f: string = self.ident()?;
+                for (let g: string in &n.strs) {
+                    if (str::eq(g, f)) { fail self.err("the field \(f) twice"); }
+                }
+                n.strs.push(f);
+                self.expect_op(sep)?;
+                n.kids.push(self.expr(0)?);
+                if (!self.at_op(",")) { break; }
+                self.skip();
+            }
+            self.expect_op("]")?;
+            return add(n);
+        }
+        if (word && (self.then_op("\\in") || self.then_op(","))) {
+            n.op = Op::FnCons;
+            self.bounds(mut &n)?;
+            self.expect_op("|->")?;
+            for (let s: i64 in &n.syms) { self.bind(s, -1)?; }
+            n.b = self.expr(0)?;
+            self.unbind(n.syms.len);
+            self.expect_op("]")?;
+            return add(n);
+        }
+        let e: i64 = self.expr(0)?;
+        if (self.at_kw("EXCEPT")) {
+            n.op = Op::Except;
+            n.a = e;
+            self.skip();
+            while (true) {
+                var item: Node = self.node(Op::ExceptItem);
+                self.expect_op("!")?;
+                while (!self.at_op("=")) {
+                    if (self.at_op(".")) {
+                        self.skip();
+                        var f: Node = self.node(Op::Str);
+                        f.str = self.ident()?;
+                        item.kids.push(add(f));
+                    } else {
+                        var t: Node = self.node(Op::Tuple);
+        }
+    }
 }
 
 // Parses src (from file, in directory dir) into prog.
