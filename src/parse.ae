@@ -738,9 +738,31 @@ impl Parser {
                         item.kids.push(add(f));
                     } else {
                         var t: Node = self.node(Op::Tuple);
+                        self.expect_op("[")?;
+                        t.kids.push(self.expr(0)?);
+                        while (self.at_op(",")) {
+                            self.skip();
+                            t.kids.push(self.expr(0)?);
+                        }
+                        self.expect_op("]")?;
+                        if (t.kids.len == 1) {
+                            item.kids.push(t.kids[0]);
+                        } else {
+                            item.kids.push(add(t));
+                        }
+                    }
+                }
+                self.skip();
+                self.excepts += 1;
+                item.b = self.expr(0)?;
+                self.excepts -= 1;
+                n.kids.push(add(item));
+                if (!self.at_op(",")) { break; }
+                self.skip();
+            }
+            self.expect_op("]")?;
+            return add(n);
         }
-    }
-}
 
 // Parses src (from file, in directory dir) into prog.
 fn parse_into(src: string, file: string, dir: string) -> void | ParseError {
