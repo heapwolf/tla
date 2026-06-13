@@ -185,8 +185,25 @@ export fn lex(src: string) -> Lexed {
         if ((c == '-' || c == '=') && i + 3 < n && src[i + 1] == c && src[i + 2] == c && src[i + 3] == c) {
             while (i < n && src[i] == c) { i += 1; }
             let t: string = match (c) { '-' => "----", _ => "====" };
+            out.toks.push(Token { kind: Tk::Op, text: t, line: line, col: col });
+            continue;
         }
+        var found: string = "";
+        for (let s: string in &symbols) {
+            if (i + s.len <= n && str::eq(src[i..i + s.len], s)) {
+                found = s;
+                break;
+            }
+        }
+        if (found.len == 0) {
+            out.error = "\(line):\(col): a character TLA+ does not have here: \(src[i..i + 1])";
+            return out;
+        }
+        out.toks.push(Token { kind: Tk::Op, text: canonical(found), line: line, col: col });
+        i += found.len;
     }
+    out.toks.push(Token { kind: Tk::Eof, line: line + 1, col: 0 });
+    return out;
 }
 
 #test fn the_lexer_keeps_columns_and_one_spelling() -> i32 {
