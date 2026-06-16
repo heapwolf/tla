@@ -874,3 +874,27 @@ export fn successors(state: i64, act: i64) -> void | EvalError {
     }
     then(root, -1)?;
 }
+
+/// The states action act leads to from state, with syms bound to vals: a fairness condition's
+/// action, possibly under a \A (\A r \in R : WF_vars(Send(r))).
+export fn successors_with(state: i64, act: i64, syms: &i64[], vals: &i64[]) -> void | EvalError {
+    cx.found = [];
+    cx.labels = [];
+    cx.cur = ys(state);
+    unset_all();
+    cx.label = "";
+    cx.fixed = false;
+    cx.ctx = "";
+    reset_envs();
+    var env: i64 = -1;
+    for (let i: i64 in 0..syms.len) { env = bind(syms[i], vals[i], 0, env); }
+    then(act, env)?;
+}
+
+/// The value of constant expression n, with syms bound to vals: the set a \A ranges over.
+export fn eval_with(n: i64, syms: &i64[], vals: &i64[]) -> i64 | EvalError {
+    reset_envs();
+    var env: i64 = -1;
+    for (let i: i64 in 0..syms.len) { env = bind(syms[i], vals[i], 0, env); }
+    return eval(n, env);
+}

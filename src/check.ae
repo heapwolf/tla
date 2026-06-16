@@ -59,6 +59,15 @@ export struct Options {
     export seed: i64 = 1;               //   from this seed (same seed, same walks).
 }
 
+/// A fairness condition, one per instance: WF_vars(A) or SF_vars(A), with its \A's names bound.
+struct Fairness {
+    strong: bool = false;
+    act: i64 = -1;                      // The action's node.
+    syms: i64[] = [];
+    vals: i64[] = [];                   // (let_go keeps these values and gives them new ids.)
+    text: string = "";                  // How it's shown.
+}
+
 struct Search {
     states: i64[] = [];                 // In order found: the queue. (Not renamed, so each is a
                                         //   successor of its parent and a trace is a behavior,
@@ -160,6 +169,135 @@ fn rss() -> string {
         i += 1;
     }
     return "";
+}
+
+fn ref(s: i64) -> i64 { return add(Node { op: Op::Global, sym: s }); }
+
+fn cval(v: &CVal) -> i64 | EvalError {
+    match (v.kind) {
+        "num" => { return mk_int(v.num)?; },
+        "str" => { return mk_str(v.text); },
+        "bool" => { return mk_bool(v.num == 1); },
+        "model" => { return mk_model(v.text); },
+        _ => {},
+    }
+    var elems: i64[] = [];
+    for (let e: &CVal in &v.elems) { elems.push(cval(e)?); }
+    return mk_set(elems);
+}
+
+// The node of a parameterless definition named in the cfg as what.
+fn named(n: string, what: string, mut r: &Report) -> i64 {
+    let s: i64 = sym(n);
+    if (let g = prog.globals.get(s)) {
+        if (g.kind == Kind::Def && g.params.len == 0) { return ref(s); }
+    }
+    say(r, "Error: the \(what) \(n) is not a definition without parameters in the spec");
+    r.code = 150;
+    return -1;
+}
+
+// Init and Next from a SPECIFICATION Init /\ [][Next]_vars (/\ fairness).
+// Whether n is fairness: WF_vars(A), SF_vars(A), a conjunction of them, or one under \A.
+fn is_fairness(n: i64) -> bool {
+    let op: Op = prog.nodes[n].op;
+    if (op == Op::Fair) { return true; }
+    if (op == Op::Forall) { return is_fairness(prog.nodes[n].b); }
+    if (op == Op::And) {
+        let kids: i64[] = std::copy(prog.nodes[n].kids);
+        for (let k: i64 in &kids) { if (!is_fairness(k)) { return false; } }
+        return true;
+    }
+    return false;
+}
+
+// Each instance of fairness n, its \A's names bound to every combination of their values.
+fn expand_fairness(n: i64, syms: &i64[], vals: &i64[], mut out: &Fairness[]) -> void | EvalError {
+    let op: Op = prog.nodes[n].op;
+    if (op == Op::Fair) {
+        let a: i64 = prog.nodes[n].a;
+        var text: string = "WF";
+        if (prog.nodes[n].num == 1) { text = "SF"; }
+        var what: string = "at \(pos(a))";
+        if (prog.nodes[a].op == Op::Global || prog.nodes[a].op == Op::Call) { what = name(prog.nodes[a].sym); }
+        var bound: string = "";
+        for (let i: i64 in 0..syms.len) {
+            if (i > 0) { bound = "\(bound),"; }
+            bound = "\(bound) \(name(syms[i])) = \(show(vals[i]))";
+        }
+        if (bound.len > 0) { what = "\(what):\(bound)"; }
+        text = "\(text)(\(what))";
+        out.push(Fairness { strong: prog.nodes[n].num == 1, act: a, syms: std::copy(*syms), vals: std::copy(*vals), text: text });
+        return;
+    }
+    if (op == Op::And) {
+        let kids: i64[] = std::copy(prog.nodes[n].kids);
+        for (let k: i64 in &kids) { expand_fairness(k, syms, vals, out)?; }
+        return;
+    }
+    let names: i64[] = std::copy(prog.nodes[n].syms);
+    let sets: i64[] = std::copy(prog.nodes[n].kids);
+    let body: i64 = prog.nodes[n].b;
+    each_binding(&names, &sets, 0, body, syms, vals, out)?;
+}
+
+fn each_binding(names: &i64[], sets: &i64[], i: i64, body: i64, syms: &i64[], vals: &i64[], mut out: &Fairness[]) -> void | EvalError {
+    if (i == names.len) {
+        expand_fairness(body, syms, vals, out)?;
+        return;
+    }
+    let set: i64 = eval_with(sets[i], syms, vals)?;
+    for (let v: i64 in elements(set)?) {
+        var more_syms: i64[] = std::copy(*syms);
+        var more_vals: i64[] = std::copy(*vals);
+        more_syms.push(names[i]);
+        more_vals.push(v);
+        each_binding(names, sets, i + 1, body, &more_syms, &more_vals, out)?;
+    }
+}
+
+fn from_spec(n: string, mut r: &Report, mut init: &i64, mut act: &i64, mut fair: &i64[]) -> void {
+    let s: i64 = sym(n);
+    let g: Global = glob(s);
+    if (g.kind != Kind::Def || g.params.len != 0) {
+        say(r, "Error: the SPECIFICATION \(n) is not a definition without parameters in the spec");
+        r.code = 150;
+        return;
+    }
+    // Its conjuncts at any depth, including /\ Init /\ [][Next]_vars on one bullet-list line.
+    var parts: i64[] = [];
+    var todo: i64[] = [g.body];
+    while (todo.len > 0) {
+        let x: i64 = todo.pop();
+        if (prog.nodes[x].op == Op::And) {
+            let kids: i64[] = std::copy(prog.nodes[x].kids);
+            var i: i64 = kids.len - 1;
+            while (i >= 0) {
+                todo.push(kids[i]);
+                i -= 1;
+            }
+        } else {
+            parts.push(x);
+        }
+    }
+    for (let p: i64 in &parts) {
+        let nd: &Node = &prog.nodes[p];
+        if (nd.op == Op::Box && prog.nodes[nd.a].op == Op::ActSub) {
+            if (*act >= 0) { break; }
+            *act = prog.nodes[nd.a].a;
+        } else if (is_fairness(p)) {
+            // fairness constrains only infinite behaviors: kept for PROPERTY, ignored for safety
+            fair.push(p);
+        } else if (*init < 0) {
+            *init = p;
+        } else {
+            *init = -2;
+        }
+    }
+    if (*init < 0 || *act < 0) {
+        say(r, "Error: the SPECIFICATION \(n) must be Init /\\ [][Next]_vars, with fairness if any");
+        r.code = 150;
+    }
 }
 
 fn show_state(st: i64) -> string[] {
