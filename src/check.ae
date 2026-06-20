@@ -68,6 +68,14 @@ struct Fairness {
     text: string = "";                  // How it's shown.
 }
 
+/// A temporal property: from each state where p holds, q eventually holds. p is -1 for TRUE
+/// ([]<>Q), -2 for initial states only (<>Q).
+struct Prop {
+    name: string = "";
+    p: i64 = -1;
+    q: i64 = -1;
+}
+
 struct Search {
     states: i64[] = [];                 // In order found: the queue. (Not renamed, so each is a
                                         //   successor of its parent and a trace is a behavior,
@@ -169,6 +177,25 @@ fn rss() -> string {
         i += 1;
     }
     return "";
+}
+
+// A node naming definition (or variable) s, to evaluate it.
+// Whether n is a state predicate: no primes, UNCHANGED or temporal operators in it or in the
+// definitions it uses (seen: definitions already checked).
+fn state_predicate(n: i64, mut seen: &Map(i64, i64)) -> bool {
+    if (n < 0) { return true; }
+    let nd: Node = std::copy(prog.nodes[n]);
+    match (nd.op) {
+        Op::Prime | Op::Unchanged | Op::Box | Op::Diamond | Op::LeadsTo | Op::Fair | Op::ActSub => { return false; },
+        _ => {},
+    }
+    if ((nd.op == Op::Global || nd.op == Op::Call) && !seen.has(nd.sym)) {
+        seen.put(nd.sym, 1);
+        let g: Global = glob(nd.sym);
+        if (g.kind == Kind::Def && !state_predicate(g.body, seen)) { return false; }
+    }
+    for (let k: i64 in &nd.kids) { if (!state_predicate(k, seen)) { return false; } }
+    return state_predicate(nd.a, seen) && state_predicate(nd.b, seen) && state_predicate(nd.c, seen);
 }
 
 fn ref(s: i64) -> i64 { return add(Node { op: Op::Global, sym: s }); }
@@ -687,7 +714,31 @@ fn run(o: &Options, c: &Cfg, mut r: &Report) -> void | EvalError {
             return;
         }
         reset_envs();
+        let unbound: i64[] = [];
+        for (let f: i64 in &fair) { expand_fairness(f, &unbound, &unbound, mut &s.fairs)?; }
+        if (s.fairs.len > 63) {
+            say(r, "Error: \(s.fairs.len) fairness conditions (every \\A's instance counts): at most 63");
+            r.code = 150;
+            return;
+        }
+        s.live = true;
     }
+    s.compact_at = o.compact_at;
+    s.compact_min = o.compact_at;
+    if (o.simulate > 0) {
+        simulate(o, init, act, &invs, &c.invariants, &cons, deadlock, r)?;
+        return;
+    }
+    reset_envs();
+    initial(init)?;
+    let firsts: i64[] = std::copy(cx.found);
+    for (let st: i64 in &firsts) {
+        if (!found(mut &s, st, -1, "Initial predicate", &invs, &c.invariants, r)?) {
+            counts(&s, r);
+            return;
+        }
+    }
+    var head: i64 = 0;
 }
 
 // The examples in examples/, with TLC's counts (a separate brute-force count agrees):
