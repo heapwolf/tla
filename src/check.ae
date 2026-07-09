@@ -198,6 +198,43 @@ fn state_predicate(n: i64, mut seen: &Map(i64, i64)) -> bool {
     return state_predicate(nd.a, seen) && state_predicate(nd.b, seen) && state_predicate(nd.c, seen);
 }
 
+// PROPERTY's graph: state st's successors (after, as found), which fairness conditions each
+// step is a step of, which are enabled in st, and where each property's P and Q hold.
+fn keep(mut s: &Search, st: i64, after: &i64[]) -> void | EvalError {
+    let me: i64 = canonical(s, st);
+    var succ: i64[] = [];
+    for (let t: i64 in after) {
+        if (let j = s.seen.get(canonical(s, t))) { succ.push(j); }
+    }
+    var steps: i64[succ.len];
+    var en: i64 = 0;
+    for (let i: i64 in 0..s.fairs.len) {
+        let f: Fairness = std::copy(s.fairs[i]);
+        successors_with(st, f.act, &f.syms, &f.vals)?;
+        let to: i64[] = std::copy(cx.found);
+        var hit: Map(i64, i64) = Map {};
+        for (let t: i64 in &to) {
+            let c: i64 = canonical(s, t);
+            if (c != me) { hit.put(c, 1); }             // a step changes the state: <<A>>_vars
+        }
+        if (hit.len() > 0) { en = en | (1 << i); }
+        for (let e: i64 in 0..succ.len) {
+            if (hit.has(s.fps[succ[e]])) { steps[e] = steps[e] | (1 << i); }
+        }
+    }
+    var pq: i64 = 0;
+    for (let i: i64 in 0..s.props.len) {
+        let p: i64 = s.props[i].p;
+        if (p == -1 || (p >= 0 && holds(st, p)?)) { pq = pq | (1 << (2 * i)); }
+        if (holds(st, s.props[i].q)?) { pq = pq | (1 << (2 * i + 1)); }
+    }
+    s.succ.push(succ);
+    s.steps.push(std::copy(steps));
+    s.enabled.push(en);
+    s.pq.push(pq);
+    s.out.push(false);
+}
+
 fn ref(s: i64) -> i64 { return add(Node { op: Op::Global, sym: s }); }
 
 fn cval(v: &CVal) -> i64 | EvalError {
