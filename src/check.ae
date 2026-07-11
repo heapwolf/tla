@@ -235,6 +235,70 @@ fn keep(mut s: &Search, st: i64, after: &i64[]) -> void | EvalError {
     s.out.push(false);
 }
 
+// Strongly connected components of the graph among states marked `stamp` in mark (Tarjan's,
+// without recursion). Every state may stutter, so each is its own cycle.
+fn components(s: &Search, nodes: &i64[], mark: &i64[], stamp: i64) -> i64[][] {
+    let n: i64 = s.succ.len;
+    var index: i64[n];
+    var low: i64[n];
+    var on: bool[n];
+    var seen: bool[n];
+    var stack: i64[] = [];
+    var out: i64[][] = [];
+    var count: i64 = 0;
+    for (let root: i64 in nodes) {
+        if (seen[root]) { continue; }
+        // depth-first walk: each frame is a state and the next successor to visit
+        var frames: i64[] = [root];
+        var at: i64[] = [0];
+        seen[root] = true;
+        index[root] = count;
+        low[root] = count;
+        count += 1;
+        stack.push(root);
+        on[root] = true;
+        while (frames.len > 0) {
+            let u: i64 = frames[frames.len - 1];
+            let e: i64 = at[at.len - 1];
+            if (e < s.succ[u].len) {
+                at[at.len - 1] = e + 1;
+                let v: i64 = s.succ[u][e];
+                if (mark[v] != stamp) { continue; }
+                if (!seen[v]) {
+                    seen[v] = true;
+                    index[v] = count;
+                    low[v] = count;
+                    count += 1;
+                    stack.push(v);
+                    on[v] = true;
+                    frames.push(v);
+                    at.push(0);
+                } else if (on[v] && index[v] < low[u]) {
+                    low[u] = index[v];
+                }
+                continue;
+            }
+            frames.pop();
+            at.pop();
+            if (frames.len > 0) {
+                let w: i64 = frames[frames.len - 1];
+                if (low[u] < low[w]) { low[w] = low[u]; }
+            }
+            if (low[u] == index[u]) {
+                var comp: i64[] = [];
+                while (true) {
+                    let x: i64 = stack.pop();
+                    on[x] = false;
+                    comp.push(x);
+                    if (x == u) { break; }
+                }
+                out.push(comp);
+            }
+        }
+    }
+    return out;
+}
+
 fn ref(s: i64) -> i64 { return add(Node { op: Op::Global, sym: s }); }
 
 fn cval(v: &CVal) -> i64 | EvalError {
