@@ -299,6 +299,54 @@ fn components(s: &Search, nodes: &i64[], mark: &i64[], stamp: i64) -> i64[][] {
     return out;
 }
 
+// A component of the waiting states a fair behavior can stay in forever, or [] if none.
+fn fair_component(s: &Search, comps: i64[][]) -> i64[] {
+    let n: i64 = s.succ.len;
+    var mark: i64[n];
+    var stamp: i64 = 1000000;               // (component marks start past the waiting set's)
+    var pending: i64[][] = comps;
+    while (pending.len > 0) {
+        let c: i64[] = pending.pop();
+        stamp += 1;
+        for (let u: i64 in &c) { mark[u] = stamp; }
+        var fair: bool = true;
+        var leave: i64 = 0;                 // SF conditions enabled in some states, never taken
+        for (let f: i64 in 0..s.fairs.len) {
+            let bit: i64 = 1 << f;
+            var taken: bool = false;
+            var some_on: bool = false;
+            var some_off: bool = false;
+            for (let u: i64 in &c) {
+                if ((s.enabled[u] & bit) != 0) { some_on = true; } else { some_off = true; }
+                for (let e: i64 in 0..s.succ[u].len) {
+                    if (mark[s.succ[u][e]] == stamp && (s.steps[u][e] & bit) != 0) { taken = true; }
+                }
+            }
+            if (taken) { continue; }
+            if (!s.fairs[f].strong) {
+                if (some_off) { continue; }
+                fair = false;               // enabled throughout, never taken: no fair behavior stays
+                break;
+            }
+            if (some_on) { leave = leave | bit; }
+        }
+        if (!fair) { continue; }
+        if (leave == 0) { return c; }
+        // SF: a staying behavior must avoid the states where it's enabled
+        var rest: i64[] = [];
+        stamp += 1;
+        for (let u: i64 in &c) {
+            if ((s.enabled[u] & leave) == 0) {
+                rest.push(u);
+                mark[u] = stamp;
+            }
+        }
+        if (rest.len == 0) { continue; }
+        for (let sub: i64[] in components(s, &rest, &mark, stamp)) { pending.push(std::copy(sub)); }
+    }
+    return [];
+}
+
 fn ref(s: i64) -> i64 { return add(Node { op: Op::Global, sym: s }); }
 
 fn cval(v: &CVal) -> i64 | EvalError {
