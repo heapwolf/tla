@@ -347,6 +347,66 @@ fn fair_component(s: &Search, comps: i64[][]) -> i64[] {
     return [];
 }
 
+// Whether props[i] holds: no fair behavior from a state where its P holds and its Q doesn't
+// stays forever where Q doesn't. If one does, it's shown.
+fn holds_eventually(mut s: &Search, i: i64, mut r: &Report) -> bool | EvalError {
+    let n: i64 = s.succ.len;
+    let pbit: i64 = 1 << (2 * i);
+    let qbit: i64 = 1 << (2 * i + 1);
+    let p: i64 = s.props[i].p;
+    var mark: i64[n];
+    var pred: i64[n];
+    var waiting: i64[] = [];
+    for (let k: i64 in 0..n) {
+        if (s.out[k] || (s.pq[k] & qbit) != 0) { continue; }
+        var start: bool = (s.pq[k] & pbit) != 0;
+        if (p == -2) { start = s.parents[k] < 0; }
+        if (start) {
+            mark[k] = 1;
+            pred[k] = -1;
+            waiting.push(k);
+        }
+    }
+    var at: i64 = 0;
+    while (at < waiting.len) {
+        let u: i64 = waiting[at];
+        at += 1;
+        for (let v: i64 in &s.succ[u]) {
+            if (v >= n || mark[v] == 1 || s.out[v] || (s.pq[v] & qbit) != 0) { continue; }
+            mark[v] = 1;
+            pred[v] = u;
+            waiting.push(v);
+        }
+    }
+    let c: i64[] = fair_component(s, components(s, &waiting, &mark, 1));
+    if (c.len == 0) { return true; }
+    say(r, "Error: Temporal properties were violated.");
+    say(r, "Error: \(s.props[i].name): from a state where it starts waiting, a fair behavior never reaches what it waits for.");
+    // into the component: the behavior to its first waiting state, then within waiting states
+    var lead: i64[] = [];
+    var k: i64 = c[0];
+    while (k >= 0) {
+        lead.push(k);
+        k = pred[k];
+    }
+    let first: i64 = lead[lead.len - 1];
+    var path: i64[] = [];
+    var j: i64 = lead.len - 2;
+    while (j >= 0) {
+        path.push(lead[j]);
+        j -= 1;
+    }
+    // around it: through each of its states, and through a step of each fairness condition
+    // with a step in it (so the loop shown is a fair behavior, not just the component)
+    var inc: bool[n];
+    for (let u: i64 in &c) { inc[u] = true; }
+    var stops: i64[] = [];                  // states to pass through, in order: a step is two
+    for (let u: i64 in &c) { stops.push(u); }
+    for (let f: i64 in 0..s.fairs.len) {
+        let bit: i64 = 1 << f;
+    }
+}
+
 fn ref(s: i64) -> i64 { return add(Node { op: Op::Global, sym: s }); }
 
 fn cval(v: &CVal) -> i64 | EvalError {
