@@ -404,7 +404,41 @@ fn holds_eventually(mut s: &Search, i: i64, mut r: &Report) -> bool | EvalError 
     for (let u: i64 in &c) { stops.push(u); }
     for (let f: i64 in 0..s.fairs.len) {
         let bit: i64 = 1 << f;
+        var done: bool = false;
+        for (let u: i64 in &c) {
+            if (done) { break; }
+            for (let e: i64 in 0..s.succ[u].len) {
+                let v: i64 = s.succ[u][e];
+                if (inc[v] && v != u && (s.steps[u][e] & bit) != 0) {
+                    stops.push(u);
+                    stops.push(-1 - v);     // the step itself: v right after u
+                    done = true;
+                    break;
+                }
+            }
+        }
     }
+    var ring: i64[] = [];
+    var here: i64 = c[0];
+    for (let t: i64 in 1..stops.len + 1) {
+        var target_state: i64 = c[0];
+        if (t < stops.len) { target_state = stops[t]; }
+        if (target_state < 0) {             // take the step
+            let v: i64 = -1 - target_state;
+            ring.push(v);
+            here = v;
+            continue;
+        }
+        if (target_state == here) { continue; }
+        for (let v: i64 in walk(s, here, target_state, &inc)) { ring.push(v); }
+        here = target_state;
+    }
+    show_lasso(s, first, &path, &ring, r);
+    if (s.fairs.len > 0) {
+        say(r, "Under the fairness:");
+        for (let f: &Fairness in &s.fairs) { say(r, "  \(f.text)"); }
+    }
+    return false;
 }
 
 fn ref(s: i64) -> i64 { return add(Node { op: Op::Global, sym: s }); }
