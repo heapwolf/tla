@@ -441,6 +441,116 @@ fn holds_eventually(mut s: &Search, i: i64, mut r: &Report) -> bool | EvalError 
     return false;
 }
 
+// States after origin (excluded) on a shortest path to target_state, through states marked in inc.
+fn walk(s: &Search, origin: i64, target_state: i64, inc: &bool[]) -> i64[] {
+    let n: i64 = s.succ.len;
+    var back: i64[n];
+    var seen: bool[n];
+    var q: i64[] = [origin];
+    seen[origin] = true;
+    var at: i64 = 0;
+    var reached: bool = false;
+    while (at < q.len && !reached) {
+        let u: i64 = q[at];
+        at += 1;
+        for (let v: i64 in &s.succ[u]) {
+            if (!inc[v] || seen[v]) { continue; }
+            seen[v] = true;
+            back[v] = u;
+            q.push(v);
+            if (v == target_state) {
+                reached = true;
+                break;
+            }
+        }
+    }
+    var out: i64[] = [];
+    if (!reached) { return out; }
+    var k: i64 = target_state;
+    while (k != origin) {
+        out.push(k);
+        k = back[k];
+    }
+    var rev: i64[] = [];
+    var i: i64 = out.len - 1;
+    while (i >= 0) {
+        rev.push(out[i]);
+        i -= 1;
+    }
+    return rev;
+}
+
+// A counterexample in TLC's layout: the behavior to `first`, then `path`, then `ring` back to
+// its start (an empty ring: stuttering there forever).
+fn show_lasso(mut s: &Search, first: i64, path: &i64[], ring: &i64[], mut r: &Report) -> void {
+    var states: i64[] = [];
+    var labels: string[] = [];
+    match (replay(s, first, mut &states, mut &labels)) {
+        v => {},
+        e: EvalError => {
+            say(r, "Error: the behavior could not be found again: \(e.msg)");
+            return;
+        },
+    }
+    var idx: i64[] = [];
+    var k: i64 = first;
+    var chain: i64[] = [];
+    while (k >= 0) {
+        chain.push(k);
+        k = s.parents[k];
+    }
+    var i: i64 = chain.len - 1;
+    while (i >= 0) {
+        idx.push(chain[i]);
+        i -= 1;
+    }
+    let cycle_at: i64 = idx.len + path.len;     // the ring's start state: the last of path
+    for (let x: i64 in path) { idx.push(x); }
+    for (let x: i64 in ring) { idx.push(x); }
+    // the rest, rebuilt: each the successor with the next state's canonical form
+    while (states.len < idx.len) {
+        let last: i64 = states[states.len - 1];
+        match (successors(last, s.act)) {
+            v => {},
+            e: EvalError => {
+                say(r, "Error: the behavior could not be found again: \(e.msg)");
+                return;
+            },
+        }
+        let choices: i64[] = std::copy(cx.found);
+        let how: string[] = std::copy(cx.labels);
+        let want: i64 = s.fps[idx[states.len]];
+        var got: i64 = -1;
+        for (let j: i64 in 0..choices.len) {
+            if (canonical(s, choices[j]) == want) {
+                got = j;
+                break;
+            }
+        }
+        if (got < 0) {
+            say(r, "Error: the behavior could not be found again");
+            return;
+        }
+        states.push(choices[got]);
+        labels.push(std::copy(how[got]));
+    }
+    say(r, "Error: The behavior up to this point is:");
+    let loop_from: i64 = cycle_at - 1;          // index in states where the ring begins
+    for (let i2: i64 in 0..states.len) {
+        var label: string = labels[i2];
+        if (label.len == 0) { label = "Next"; }
+        if (i2 == states.len - 1 && ring.len > 0) {
+            say(r, "Back to state \(loop_from + 1): <\(label)>");
+            say(r, "");
+            break;
+        }
+        say(r, "State \(i2 + 1): <\(label)>");
+        for (let l: string in show_state(states[i2])) { say(r, l); }
+        say(r, "");
+    }
+    if (ring.len == 0) { say(r, "State \(states.len + 1): Stuttering"); }
+}
+
 fn ref(s: i64) -> i64 { return add(Node { op: Op::Global, sym: s }); }
 
 fn cval(v: &CVal) -> i64 | EvalError {
