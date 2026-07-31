@@ -1092,6 +1092,36 @@ fn run(o: &Options, c: &Cfg, mut r: &Report) -> void | EvalError {
         }
     }
     var head: i64 = 0;
+    while (head < s.states.len) {
+        if (vt.nodes.len > s.compact_at) { let_go(mut &s, head); }
+        let k: i64 = head;
+        head += 1;
+        let st: i64 = s.states[k];
+        s.states[k] = -1;                   // (st's values stay until the next let_go)
+        var inside: bool = true;
+        for (let p: i64 in &cons) {
+            if (!holds(st, p)?) {
+                inside = false;
+                break;
+            }
+        }
+        if (!inside) {
+            if (s.live) {
+                s.succ.push([]);
+                s.steps.push([]);
+                s.enabled.push(0);
+                s.pq.push(0);
+                s.out.push(true);
+            }
+            continue;
+        }
+        match (successors(st, act)) {
+            v => {},
+            e: EvalError => {
+                say(r, "Error: \(where_at()): \(e.msg)");
+            }
+        }
+    }
 }
 
 // The examples in examples/, with TLC's counts (a separate brute-force count agrees):
