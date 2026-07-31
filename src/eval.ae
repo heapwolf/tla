@@ -898,3 +898,11 @@ export fn eval_with(n: i64, syms: &i64[], vals: &i64[]) -> i64 | EvalError {
     for (let i: i64 in 0..syms.len) { env = bind(syms[i], vals[i], 0, env); }
     return eval(n, env);
 }
+
+/// Whether the predicate p holds in state.
+export fn holds(state: i64, p: i64) -> bool | EvalError {
+    cx.cur = ys(state);
+    cx.init = false;
+    reset_envs();
+    return boolean(eval(p, -1)?);
+}

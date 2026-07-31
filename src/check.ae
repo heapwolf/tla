@@ -1119,7 +1119,17 @@ fn run(o: &Options, c: &Cfg, mut r: &Report) -> void | EvalError {
             v => {},
             e: EvalError => {
                 say(r, "Error: \(where_at()): \(e.msg)");
-            }
+                say(r, "Error: while finding the successors of the last state of:");
+                trace(mut &s, k, r);
+                r.code = 75;
+                counts(&s, r);
+                return;
+            },
+        }
+        let next_states: i64[] = std::copy(cx.found);
+        let labels: string[] = std::copy(cx.labels);
+        if (next_states.len == 0 && deadlock) {
+            say(r, "Error: Deadlock reached.");
         }
     }
 }
