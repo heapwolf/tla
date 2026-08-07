@@ -1192,3 +1192,24 @@ fn code_of(m: string, body: string, cfg: string) -> i64 {
     let r: Report = check(&Options { spec: spec });
     return r.code;
 }
+
+// Liveness, answers known by hand: fairness keeps a behavior going; WF lets an action enabled
+// only intermittently wait forever, SF doesn't; \A's fairness applies to each instance.
+#test fn liveness_under_fairness() -> i32 {
+    let counter: string = "EXTENDS Naturals\nVARIABLE x\nvars == <<x>>\nInit == x = 0\nNext == x' = (x + 1) % 3\nTwo == x = 2\nOften == []<>Two\nSoon == <>Two\nLeads == (x = 0) ~> (x = 2)\n";
+    if (code_of("L1", "\(counter)Spec == Init /\\ [][Next]_vars /\\ WF_vars(Next)", "SPECIFICATION Spec\nPROPERTY Often Soon Leads\n") != 0) { return 1; }
+    if (code_of("L2", "\(counter)Spec == Init /\\ [][Next]_vars", "SPECIFICATION Spec\nPROPERTY Soon\n") != 13) { return 2; }
+    // Go is enabled only while y = 1, and Tick keeps turning y over.
+    let toggle: string = "VARIABLES x, y\nvars == <<x, y>>\nInit == x = 0 /\\ y = 0\nTick == y' = 1 - y /\\ x' = x\nGo == y = 1 /\\ x = 0 /\\ x' = 1 /\\ y' = y\nNext == Tick \\/ Go\nGone == <>(x = 1)\n";
+    if (code_of("L3", "EXTENDS Naturals\n\(toggle)Spec == Init /\\ [][Next]_vars /\\ WF_vars(Tick) /\\ WF_vars(Go)", "SPECIFICATION Spec\nPROPERTY Gone\n") != 13) { return 3; }
+    if (code_of("L4", "EXTENDS Naturals\n\(toggle)Spec == Init /\\ [][Next]_vars /\\ WF_vars(Tick) /\\ SF_vars(Go)", "SPECIFICATION Spec\nPROPERTY Gone\n") != 0) { return 4; }
+    // Each process steps once; fairness for each, or for one.
+    let procs: string = "CONSTANT P\nVARIABLE done\nvars == <<done>>\nInit == done = [p \\in P |-> FALSE]\nStep(p) == ~done[p] /\\ done' = [done EXCEPT ![p] = TRUE]\nNext == \\E p \\in P : Step(p)\nAll == <>(\\A p \\in P : done[p])\n";
+    let pcfg: string = "CONSTANTS\n  P = {a, b}\nSPECIFICATION Spec\nPROPERTY All\nCHECK_DEADLOCK FALSE\n";
+    if (code_of("L5", "\(procs)Spec == Init /\\ [][Next]_vars /\\ \\A p \\in P : WF_vars(Step(p))", pcfg) != 0) { return 5; }
+    if (code_of("L6", "\(procs)Spec == Init /\\ [][Next]_vars /\\ WF_vars(Step(CHOOSE p \\in P : TRUE))", pcfg) != 13) { return 6; }
+    // Refused, not passed: PROPERTY with SYMMETRY, and a property of another form.
+    if (code_of("L7", "EXTENDS TLC\n\(procs)Perms == Permutations(P)\nSpec == Init /\\ [][Next]_vars", "\(pcfg)SYMMETRY Perms\n") != 150) { return 7; }
+    if (code_of("L8", "\(counter)Box == [](x < 3)\nSpec == Init /\\ [][Next]_vars", "SPECIFICATION Spec\nPROPERTY Box\n") != 150) { return 8; }
+    return 0;
+}
