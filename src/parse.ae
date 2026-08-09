@@ -763,6 +763,91 @@ impl Parser {
             self.expect_op("]")?;
             return add(n);
         }
+        if (self.at_op("->")) {
+            n.op = Op::FnSet;
+            n.a = e;
+            self.skip();
+            n.b = self.expr(0)?;
+            self.expect_op("]")?;
+            return add(n);
+        }
+        self.expect_op("]")?;
+        // [A]_v, in a SPECIFICATION
+        let sub: string = self.toks[self.i].text;
+        if (self.spec_ok && self.toks[self.i].kind == Tk::Ident && sub.len > 0 && sub[0] == '_') {
+            n.op = Op::ActSub;
+            n.a = e;
+            let v: string = sub[1..];
+            self.skip();
+            if (v.len == 0) {
+                n.b = self.prefix()?;
+            } else {
+                var g: Node = self.node(Op::Global);
+                g.sym = sym(v);
+                if (!prog.globals.has(g.sym)) { fail self.err("unknown name \(v)"); }
+                n.b = add(g);
+            }
+            return add(n);
+        }
+        fail self.err("the subset has no [e] here");
+    }
+
+    // ---- Definitions and the module ----
+
+    // Name == e, Name(p, q) == e or f[x \in S] == e. Returns a LetDef node. Top-level ones
+    // (local false) also go into prog.globals.
+    fn definition(mut self: &Parser, local: bool) -> i64 | ParseError {
+        var d: Node = self.node(Op::LetDef);
+        let w: string = self.ident()?;
+        d.sym = sym(w);
+        var fun: Node = self.node(Op::FnCons);
+        var is_fun: bool = false;
+        if (self.at_op("(")) {
+            self.skip();
+            while (true) {
+                d.syms.push(sym(self.ident()?));
+                if (self.at_op("(")) { fail self.err("the subset has no operators as parameters"); }
+                if (!self.at_op(",")) { break; }
+                self.skip();
+            }
+            self.expect_op(")")?;
+        } else if (self.at_op("[")) {
+            self.skip();
+            self.bounds(mut &fun)?;
+            self.expect_op("]")?;
+            is_fun = true;
+        }
+        if (!self.at_op("==")) {
+            if (self.kind() == Tk::Op) { fail self.err("the subset has no infix or postfix operators of one's own"); }
+            fail self.err("expected ==");
+        }
+        self.skip();
+        let line: i64 = d.line;
+        if (!local) {
+            // A RECURSIVE declaration (a Def without a body yet) lets the body call it.
+            if (let g = prog.globals.get(d.sym)) {
+                if (g.kind != Kind::Def || g.body >= 0 || g.params.len != d.syms.len) {
+                    fail self.err("\(w) is already defined");
+                }
+            }
+        } else if (self.find_bound(d.sym) >= 0 || prog.globals.has(d.sym)) {
+            fail self.err("\(w) is already defined");
+        }
+        for (let p: i64 in &d.syms) { self.bind(p, -1)?; }
+        if (is_fun) {
+            for (let s: i64 in &fun.syms) { self.bind(s, -1)?; }
+            // A recursive function would need its own name here, which is not yet bound.
+            fun.b = self.expr(0)?;
+            self.unbind(fun.syms.len);
+            d.b = add(fun);
+        } else {
+            d.b = self.expr(0)?;
+        }
+        self.unbind(d.syms.len);
+        if (!local) {
+            prog.globals.put(d.sym, Global {
+                kind: Kind::Def, params: std::copy(d.syms), body: d.b, line: line, file: self.file
+            });
 
 // Parses src (from file, in directory dir) into prog.
 fn parse_into(src: string, file: string, dir: string) -> void | ParseError {
