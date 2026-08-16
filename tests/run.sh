@@ -66,3 +66,20 @@ for spec in "$here"/cases/${CASES:-*}.tla; do
                     printf '%s\n' "$out" | grep -qE '^Back to state [0-9]+:' || problems="$problems; no loop"
                 fi
                 printf '%s\n' "$out" | grep -q 'Stuttering' && problems="$problems; stuttering, want a loop";;
+            stutter)
+                printf '%s\n' "$out" | grep -qE '^State [0-9]+: Stuttering$' || problems="$problems; no stuttering"
+                printf '%s\n' "$out" | grep -q '^Back to state' && problems="$problems; a loop, want stuttering";;
+            values)
+                var="$1"; shift
+                g="$(printf '%s\n' "$out" | sed -n "s/^\/\\\\ $var = //p" | tr '\n' ' ' | sed 's/ $//')"
+                [ "$g" = "$*" ] || problems="$problems; $var: '$g', want '$*'";;
+            looplabel)
+                printf '%s\n' "$out" | loop_of | grep -qxF "label <$1>" || problems="$problems; no <$1> step in the loop";;
+            sfloop)
+                lp="$(printf '%s\n' "$out" | loop_of)"
+                if printf '%s\n' "$lp" | grep -qxF "$1 = $2" && ! printf '%s\n' "$lp" | grep -qxF "label <$3>"; then
+                    problems="$problems; the loop has $1 = $2 but no <$3> step: not fair"
+                fi;;
+            has) printf '%s\n' "$out" | grep -qF -- "$rest" || problems="$problems; missing '$rest'";;
+            lacks) printf '%s\n' "$out" | grep -qF -- "$rest" && problems="$problems; has '$rest'";;
+            args|nocfg) ;;
