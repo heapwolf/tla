@@ -1130,6 +1130,16 @@ fn run(o: &Options, c: &Cfg, mut r: &Report) -> void | EvalError {
         let labels: string[] = std::copy(cx.labels);
         if (next_states.len == 0 && deadlock) {
             say(r, "Error: Deadlock reached.");
+            trace(mut &s, k, r);
+            r.code = 11;
+            counts(&s, r);
+            return;
+        }
+        for (let i: i64 in 0..next_states.len) {
+            if (!found(mut &s, next_states[i], k, labels[i], &invs, &c.invariants, r)?) {
+                counts(&s, r);
+                return;
+            }
         }
     }
 }
