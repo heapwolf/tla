@@ -806,6 +806,39 @@ fn step(n: i64, env: i64) -> void | EvalError {
         },
         Op::Let => {
             then(prog.nodes[n].b, let_env(n, env))?;
+            return;
+        },
+        Op::Global => {
+            let s: i64 = prog.nodes[n].sym;
+            let g: Global = glob(s);
+            if (g.kind == Kind::Def && !constant_def(s)) {
+                let outer: string = cx.ctx;
+                cx.ctx = name(s);
+                then(g.body, -1)?;
+                cx.ctx = outer;
+                return;
+            }
+        },
+        Op::Call => {
+            let s: i64 = prog.nodes[n].sym;
+            if (prog.nodes[n].num == 1) {
+                let args: i64[] = eval_args(n, env)?;
+                let e: i64 = find_env(s, env);
+                let d: i64 = cx.envs.vals[e];
+                let params: i64[] = std::copy(prog.nodes[d].syms);
+                then(prog.nodes[d].b, call_env(&params, &args, cx.envs.parents[e]))?;
+                return;
+            }
+            let g: Global = glob(s);
+            if (g.kind == Kind::Def) {
+                let args: i64[] = eval_args(n, env)?;
+                if (g.body < 0) { fail err("\(name(s)) is declared RECURSIVE but never defined"); }
+                var parts: string = "";
+                for (let i: i64, let a: i64 in &args) {
+                    if (i > 0) { parts = "\(parts), "; }
+                    var shown: string = show(a);
+                }
+            }
         }
     }
 }
