@@ -83,3 +83,30 @@ for spec in "$here"/cases/${CASES:-*}.tla; do
             has) printf '%s\n' "$out" | grep -qF -- "$rest" || problems="$problems; missing '$rest'";;
             lacks) printf '%s\n' "$out" | grep -qF -- "$rest" && problems="$problems; has '$rest'";;
             args|nocfg) ;;
+            *) problems="$problems; unknown expectation '$key'";;
+        esac
+    done < <(sed -n 's/^\\\* EXPECT //p' "$spec")
+    if [ -z "$problems" ]; then
+        echo "pass $name"
+    else
+        echo "FAIL $name:${problems#;}"
+        [ -n "$VERBOSE" ] && printf '%s\n' "$out" | sed 's/^/    /'
+        fails=$((fails + 1))
+    fi
+done
+[ $total = 0 ] && { echo "FAIL no cases match"; fails=1; }
+echo "cases: $((total - fails))/$total pass"
+if [ "${DIFF:-1}" != 0 ]; then
+    for seed in ${SEEDS:-1 2 3 4}; do
+        res="$(python3 -I -B "$here/differential.py" "${DIFFN:-500}" "$seed" 2>&1)"; rc=$?
+        last="$(printf '%s\n' "$res" | tail -1)"
+        if [ $rc = 0 ]; then echo "pass differential seed $seed: $last"
+        else
+            echo "FAIL differential seed $seed: $(printf '%s\n' "$res" | grep -c '^FAIL case') failing; $last"
+            [ -n "$VERBOSE" ] && printf '%s\n' "$res" | head -60 | sed 's/^/    /'
+            fails=$((fails + 1))
+        fi
+    done
+fi
+[ $fails = 0 ] && echo "all pass" || echo "$fails failure(s)"
+[ $fails = 0 ]
