@@ -151,3 +151,76 @@ def fair_set(S, succ, fair, step, enabled):
         if f == "SF" and any(u in enabled[i] for u in S):
             return False
     return True
+
+
+def run(c, with_property):
+    d = tempfile.mkdtemp(prefix="tla-diff-")
+    with open(os.path.join(d, "R.tla"), "w") as f:
+        f.write(spec(c))
+    cfg = "SPECIFICATION Spec\nINVARIANT Safe\nCHECK_DEADLOCK FALSE\n"
+    if with_property:
+        cfg = "SPECIFICATION Spec\nPROPERTY Live\nCHECK_DEADLOCK FALSE\n"
+    with open(os.path.join(d, "R.cfg"), "w") as f:
+        f.write(cfg)
+    p = subprocess.run([TLA, os.path.join(d, "R.tla")], capture_output=True, text=True)
+    return p.returncode, p.stdout + p.stderr
+
+
+def trace(out):
+    """States tla shows (values of s), and the state its loop goes back to (None: stuttering)."""
+    states, back = [], None
+    for line in out.splitlines():
+        m = re.match(r"/\\ s = (\d+)$", line.strip())
+        if m:
+            states.append(int(m.group(1)))
+        m = re.match(r"Back to state (\d+):", line)
+        if m:
+            back = int(m.group(1))
+    return states, back
+
+
+def check_lasso(c, out, waiting):
+    """tla's counterexample: a real path, a real loop, waiting all along the loop, and fair."""
+    n, edges = c["n"], c["edges"]
+    succ = {u: set() for u in range(n)}
+    for es in edges:
+        for a, b in es:
+            succ[a].add(b)
+    states, back = trace(out)
+    if not states or states[0] not in c["init"]:
+        return "no behavior from an initial state"
+    for a, b in zip(states, states[1:]):
+        if b not in succ[a]:
+            return f"{a} -> {b} is no step"
+    if back is None:
+        loop = [states[-1]]
+        if "Stuttering" not in out:
+            return "neither a loop nor stuttering"
+    else:
+        if states[back - 1] not in succ[states[-1]]:
+            return f"the loop's last step {states[-1]} -> {states[back - 1]} is no step"
+        loop = states[back - 1:]
+    if any(u not in waiting for u in loop):
+        return f"the loop leaves the waiting states: {loop}"
+    S = set(loop)
+    used = set(zip(loop, loop[1:] + loop[:1])) if back is not None else set()
+    step = [{(a, b) for a, b in es if a != b} for es in edges]
+    enabled = [{a for a, b in es if a != b} for es in edges]
+    for i, f in enumerate(c["fair"]):
+        if not f:
+            continue
+        if any(e in used for e in step[i]):
+            continue
+        if f == "WF" and all(u in enabled[i] for u in S):
+            return f"the loop isn't fair: WF(A{i}) enabled throughout, never taken"
+        if f == "SF" and any(u in enabled[i] for u in S):
+            return f"the loop isn't fair: SF(A{i}) enabled, never taken"
+    return None
+
+
+def main():
+    cases = int(sys.argv[1]) if len(sys.argv) > 1 else 300
+    seed = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+    rng = random.Random(seed)
+    failed = 0
+    kinds = {"holds": 0, "fails": 0, "safe": 0, "unsafe": 0, "loops": 0, "stutters": 0}
