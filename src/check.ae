@@ -1141,6 +1141,23 @@ fn run(o: &Options, c: &Cfg, mut r: &Report) -> void | EvalError {
                 return;
             }
         }
+        if (s.live) { keep(mut &s, st, &next_states)?; }
+        if (s.states.len > o.max_states || vt.nodes.len > o.max_values) {
+            say(r, "Error: stopped before the search was done: \(s.states.len) distinct states (limit \(o.max_states)), \(vt.nodes.len) values (limit \(o.max_values)), \(s.states.len - head) states on the queue. Bound the model (CONSTRAINT), or raise -maxstates / -maxvalues.");
+            r.code = 1;
+            counts(&s, r);
+            return;
+        }
+        if (o.progress && head % 2000 == 0) {
+            eprintln("progress: \(s.states.len) distinct states, \(s.states.len - head) on the queue, \(vt.nodes.len) values, live \((process::mem_stat(0) - process::mem_stat(2)) / 1048576) MiB, heap \(process::mem_stat(3) / 1048576) MiB, \(rss())");
+        }
+    }
+    if (s.live) {
+        for (let i: i64 in 0..s.props.len) {
+            if (!holds_eventually(mut &s, i, r)?) {
+                r.code = 13;
+            }
+        }
     }
 }
 

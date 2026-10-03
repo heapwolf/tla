@@ -837,10 +837,27 @@ fn step(n: i64, env: i64) -> void | EvalError {
                 for (let i: i64, let a: i64 in &args) {
                     if (i > 0) { parts = "\(parts), "; }
                     var shown: string = show(a);
+                    if (shown.len > 48) { shown = "\(shown[0..45])..."; }
+                    parts = "\(parts)\(shown)";
                 }
+                let outer: string = cx.ctx;
+                cx.ctx = "\(name(s))(\(parts))";
+                then(g.body, call_env(&g.params, &args, -1))?;
+                cx.ctx = outer;
+                return;
             }
-        }
+        },
+        Op::Local => {
+            let e: i64 = find_env(prog.nodes[n].sym, env);
+            if (e >= 0 && cx.envs.kinds[e] == 1) {
+                then(prog.nodes[cx.envs.vals[e]].b, cx.envs.parents[e])?;
+                return;
+            }
+        },
+        _ => {},
     }
+    // A condition on what is set so far.
+    if (boolean(eval(n, env)?)?) { run()?; }
 }
 
 // Sets the label if this is the state's first variable set: the innermost definition the
