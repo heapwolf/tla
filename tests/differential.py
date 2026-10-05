@@ -224,3 +224,40 @@ def main():
     rng = random.Random(seed)
     failed = 0
     kinds = {"holds": 0, "fails": 0, "safe": 0, "unsafe": 0, "loops": 0, "stutters": 0}
+    for k in range(cases):
+        c = make(rng)
+        distinct, depth, violation, live, waiting = oracle(c)
+        code, out = run(c, with_property=False)
+        want = 12 if violation else 0
+        problem = None
+        if code != want:
+            problem = f"safety: tla exit {code}, oracle {want}"
+        elif violation is None:
+            got = re.search(r"(\d+) distinct states found", out)
+            dep = re.search(r"depth of the complete state graph search is (\d+)", out)
+            if not got or int(got.group(1)) != distinct or not dep or int(dep.group(1)) != depth:
+                problem = f"counts: tla {got and got.group(1)}/{dep and dep.group(1)}, oracle {distinct}/{depth}"
+            kinds["safe"] += 1
+        else:
+            states, _ = trace(out)
+            if len(states) != violation:
+                problem = f"trace: tla {len(states)} states, shortest {violation}"
+            kinds["unsafe"] += 1
+        if problem is None:
+            code, out = run(c, with_property=True)
+            want = 0 if live else 13
+            if code != want:
+                problem = f"liveness: tla exit {code}, oracle {want}"
+            elif not live:
+                problem = check_lasso(c, out, waiting)
+                kinds["loops" if "Back to state" in out else "stutters"] += 1
+            kinds["holds" if live else "fails"] += 1
+        if problem:
+            failed += 1
+            print(f"FAIL case {k} (seed {seed}): {problem}\n{spec(c)}{out}")
+    print(f"{cases - failed}/{cases} agree: {kinds}")
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    main()
