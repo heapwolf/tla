@@ -848,6 +848,90 @@ impl Parser {
             prog.globals.put(d.sym, Global {
                 kind: Kind::Def, params: std::copy(d.syms), body: d.b, line: line, file: self.file
             });
+        }
+        return add(d);
+    }
+
+    fn names(mut self: &Parser, kind: Kind) -> void | ParseError {
+        while (true) {
+            let w: string = self.ident()?;
+            if (self.at_op("(")) { fail self.err("the subset has no constant operators (\(w)(_))"); }
+            let s: i64 = sym(w);
+            if (prog.globals.has(s)) { fail self.err("\(w) is already defined"); }
+            var g: Global = Global { kind: kind, line: self.toks[self.i].line, file: self.file };
+            if (kind == Kind::Var) {
+                g.index = prog.vars.len;
+                prog.vars.push(s);
+            } else {
+                g.index = prog.consts.len;
+                prog.consts.push(s);
+            }
+            prog.globals.put(s, g);
+            if (!self.at_op(",")) { break; }
+            self.skip();
+        }
+    }
+
+    // A module: ---- MODULE Name ---- ... ====
+    fn module(mut self: &Parser) -> string | ParseError {
+        while (self.at_op("----") && !self.then_ident("MODULE")) { self.skip(); }
+        self.expect_op("----")?;
+        self.expect_kw("MODULE")?;
+        let m: string = self.ident()?;
+        self.expect_op("----")?;
+        while (true) {
+            let k: Tk = self.kind();
+            if (k == Tk::Eof) { fail self.err("the module has no closing ===="); }
+            if (self.at_op("====")) { break; }
+            if (self.at_op("----")) {
+                self.skip();
+                continue;
+            }
+            if (k != Tk::Ident) { fail self.err("expected a definition or declaration"); }
+            let w: string = self.text();
+            match (w) {
+                "EXTENDS" => {
+                    self.skip();
+                    while (true) {
+                        let e: string = self.ident()?;
+                        if (!add_std(e)) { self.extend(e)?; }
+                        if (!self.at_op(",")) { break; }
+                        self.skip();
+                    }
+                },
+                "CONSTANT" | "CONSTANTS" => {
+                    self.skip();
+                    self.names(Kind::Const)?;
+                },
+                "VARIABLE" | "VARIABLES" => {
+                    self.skip();
+                    self.names(Kind::Var)?;
+                },
+                "ASSUME" | "ASSUMPTION" | "AXIOM" => {
+                    self.skip();
+                    prog.assumes.push(self.expr(0)?);
+                },
+                "THEOREM" | "LEMMA" => {
+                    // Parsed and discarded: theorems are for proofs, not this checker.
+                    self.skip();
+                    if (self.kind() == Tk::Ident && self.then_op("==")) { self.i += 2; }
+                    self.spec_ok = true;
+                    let e: i64 = self.expr(0)?;
+                    self.spec_ok = false;
+                },
+                "RECURSIVE" => {
+                    self.skip();
+                    while (true) {
+                        let r: string = self.ident()?;
+                        self.expect_op("(")?;
+                        var params: i64[] = [];
+                        while (true) {
+                            if (!self.at_kw("_")) { fail self.err("expected _"); }
+                            self.skip();
+            }
+        }
+    }
+}
 
 // Parses src (from file, in directory dir) into prog.
 fn parse_into(src: string, file: string, dir: string) -> void | ParseError {
