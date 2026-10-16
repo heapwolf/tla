@@ -446,6 +446,93 @@ export fn eval(n: i64, env: i64) -> i64 | EvalError {
         },
         Op::SetEnum => {
             var out: i64[] = [];
+            let kids: i64[] = std::copy(prog.nodes[n].kids);
+            for (let k: i64 in &kids) { out.push(norm(eval(k, env)?)?); }
+            return mk_set(out);
+        },
+        Op::Tuple => {
+            var out: i64[] = [];
+            let kids: i64[] = std::copy(prog.nodes[n].kids);
+            for (let k: i64 in &kids) { out.push(norm(eval(k, env)?)?); }
+            return mk_tuple(out);
+        },
+        Op::SetFilter => {
+            let x: i64 = prog.nodes[n].syms[0];
+            let body: i64 = prog.nodes[n].b;
+            var out: i64[] = [];
+            for (let e: i64 in elements(eval(prog.nodes[n].a, env)?)?) {
+                if (boolean(eval(body, bind(x, e, 0, env))?)?) { out.push(e); }
+            }
+            return mk_set_sorted(out);
+        },
+        Op::SetMap | Op::FnCons | Op::Forall | Op::Exists => {
+            let syms: i64[] = std::copy(prog.nodes[n].syms);
+            let sets: i64[][] = bound_sets(n, env)?;
+            var body: i64 = prog.nodes[n].b;
+            if (op == Op::SetMap) { body = prog.nodes[n].a; }
+            var keys: i64[] = [];
+            var vals: i64[] = [];
+            if (!any_empty(&sets)) {
+                var pick: i64[syms.len];
+                while (true) {
+                    let e: i64 = bind_pick(&syms, &sets, &pick, env);
+                    let v: i64 = eval(body, e)?;
+                    match (op) {
+                        Op::Forall => { if (!boolean(v)?) { return FALSE; } },
+                        Op::Exists => { if (boolean(v)?) { return TRUE; } },
+                        _ => {
+                            vals.push(norm(v)?);
+                            if (op == Op::FnCons) {
+                                var key: i64 = sets[0][pick[0]];
+                                if (syms.len > 1) {
+                                    var t: i64[] = [];
+                                    for (let i: i64 in 0..syms.len) { t.push(sets[i][pick[i]]); }
+                                    key = mk_tuple(t);
+                                }
+                                keys.push(key);
+                            }
+                        },
+                    }
+                    if (!advance(mut &pick, &sets)) { break; }
+                }
+            }
+            return match (op) {
+                Op::Forall => TRUE,
+                Op::Exists => FALSE,
+                Op::SetMap => mk_set(vals),
+                _ => mk_func(&keys, &vals)?,
+            };
+        },
+        Op::Choose => {
+            let x: i64 = prog.nodes[n].syms[0];
+            let body: i64 = prog.nodes[n].b;
+            for (let e: i64 in elements(eval(prog.nodes[n].a, env)?)?) {
+                if (boolean(eval(body, bind(x, e, 0, env))?)?) { return e; }
+            }
+            cx.at = n;
+            fail err("CHOOSE found no element that satisfies its condition");
+        },
+        Op::FnSet => {
+            let a: i64 = eval(prog.nodes[n].a, env)?;
+            let b: i64 = eval(prog.nodes[n].b, env)?;
+            if (!is_set(a) || !is_set(b)) { fail err("[S -> T] of something that is not a set"); }
+            return lazy(Tag::FnSet, a, b);
+        },
+        Op::RecCons | Op::RecSet => {
+            let names: string[] = std::copy(prog.nodes[n].strs);
+            var vals: i64[] = [];
+            let kids: i64[] = std::copy(prog.nodes[n].kids);
+            for (let k: i64 in &kids) { vals.push(norm(eval(k, env)?)?); }
+            if (op == Op::RecCons) { return mk_rec(&names, &vals)?; }
+            for (let v: i64 in &vals) { if (!is_set(v)) { fail err("[a : S] where S is \(show(v)), not a set"); } }
+            return mk_recset(&names, &vals)?;
+        },
+        Op::Except => {
+            var f: i64 = eval(prog.nodes[n].a, env)?;
+            let items: i64[] = std::copy(prog.nodes[n].kids);
+            for (let it: i64 in &items) {
+                let path: i64[] = std::copy(prog.nodes[it].kids);
+            }
         }
     }
 }
@@ -626,7 +713,9 @@ fn builtin(w: string, args: &i64[]) -> i64 | EvalError {
             var out: i64[] = [];
             var perm: i64[] = std::copy(s);
             permute(mut &perm, 0, &s, mut &out)?;
-        }
+            return mk_set(out);
+        },
+        _ => { fail err("internal: no builtin \(w)"); },
     }
 }
 
