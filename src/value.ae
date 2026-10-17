@@ -717,7 +717,18 @@ export fn show(v: i64) -> string {
                 return "<<\(join(&parts, ", "))>>";
             }
             var record: bool = true;
-        }
+            for (let k: i64 in &d) { if (!is_tag(k, Tag::Str)) { record = false; } }
+            for (let k: i64 in sorted(&d)) {
+                let val: string = show(lookup(v, k) ?? 0);
+                if (record) {
+                    parts.push("\(vt.nodes[k >> 1].s) |-> \(val)");
+                } else {
+                    parts.push("\(show(k)) :> \(val)");
+                }
+            }
+            if (record) { return "[\(join(&parts, ", "))]"; }
+            return "(\(join(&parts, " @@ ")))";
+        },
     }
 }
 
