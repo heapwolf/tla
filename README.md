@@ -44,3 +44,46 @@ afterwards; `UNCHANGED`; a SPECIFICATION of the form `Init /\ [][Next]_vars` (co
 any depth), with fairness `WF_vars(A)` and `SF_vars(A)`, also under bounded `\A` (`\A p \in P
 : WF_vars(Step(p))`, one condition per instance) and in conjunctions. Fairness doesn't affect
 safety; PROPERTYs are checked under it.
+
+**Properties.** `PROPERTY P` (or `PROPERTIES`) in the cfg, in one of three forms, where P and
+Q are state predicates (no primes, `UNCHANGED` or temporal operators, directly or in what
+they use):
+
+| form | means |
+| --- | --- |
+| `P ~> Q` | whenever P holds, Q holds then or later |
+| `[]<>Q` | Q holds infinitely often (`TRUE ~> Q`) |
+| `<>Q` | Q holds eventually, from the initial states |
+
+For fairness, a step of A means `<<A>>_vars`, one that changes the state; a stuttering step
+neither counts as A nor makes A enabled. Every state may stutter. As in TLC, the state graph
+is kept (successors, which fairness conditions each step satisfies, where each is enabled).
+The waiting states (reachable from a P-and-not-Q state through not-Q states) are split into
+strongly connected components. A component is fair if each WF action is taken in it or
+disabled in some state of it, and each SF action is taken in it or disabled in all its
+states (otherwise, the states enabling it are removed and the rest split again). A fair
+component is a counterexample, shown as a behavior into it plus a fair loop around it (a
+step of each fairness condition it can take), or as stuttering in a state where nothing
+fair is enabled.
+
+**cfg.** `CONSTANT(S)` (numbers, strings, booleans, model values, sets of them, and `C <-
+Def`), `INIT` and `NEXT` or `SPECIFICATION`, `INVARIANT(S)`, `PROPERTY`/`PROPERTIES`,
+`CONSTRAINT(S)`, `CHECK_DEADLOCK`, `SYMMETRY`.
+
+**Not supported:** other temporal forms (`[]P`, `<>[]P`, `P => <>Q` as a property, nested
+`~>`, `\A x : P ~> Q`), `ENABLED`, a PROPERTY with `SYMMETRY` (merging symmetric states loses
+per-instance fairness) or with `-simulate`, `INSTANCE`, `LAMBDA`, operator arguments,
+user-defined infix operators, unbounded quantifiers and `CHOOSE`, tuple binders (`\E <<x,
+y>> \in S`), recursive functions, `VIEW`, `ACTION_CONSTRAINT`, `ALIAS`.
+
+**Checking.** Exit codes match TLC's (0 ok, 10 false ASSUME, 11 deadlock, 12 invariant
+violated, 13 property violated, 75 evaluation error, 150 unreadable spec or cfg), plus 1 when
+the search stops early at `-maxstates` or `-maxvalues`. A state outside a `CONSTRAINT` is
+checked but not explored, and is left out of a property's graph (being cut off there doesn't
+mean the system is stuck). States are identified by 64-bit fingerprints, as in TLC (under
+`SYMMETRY`, the least over its renamings); the report gives the collision odds. As in TLC,
+an explored state keeps only its fingerprint and parent (plus its edges, for a PROPERTY); a
+state is held whole only while queued, and values held only by explored states are freed
+periodically. A violation's trace is rebuilt from the initial states, each step taking the
+successor with the next fingerprint. `-simulate N -depth D -seed S` checks random behaviors
+instead: it finds deep bugs but proves nothing.
