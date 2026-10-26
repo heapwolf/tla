@@ -87,3 +87,20 @@ state is held whole only while queued, and values held only by explored states a
 periodically. A violation's trace is rebuilt from the initial states, each step taking the
 successor with the next fingerprint. `-simulate N -depth D -seed S` checks random behaviors
 instead: it finds deep bugs but proves nothing.
+
+**Testing.** Two layers (details in tests/README.md):
+
+- `aec test src`: the examples in `examples` with TLC's counts (Lamport's TCommit, 34
+  states; TwoPhase, 288, and 80 with SYMMETRY; DieHard's 7-state trace); `Semantics.tla`,
+  whose ASSUMEs are facts from Specifying Systems; the same reports when explored states are
+  freed at every step; and liveness under WF, SF and `\A` fairness. An independent Python
+  brute force matched the counts (distinct states, states generated, depth) and the symmetry
+  orbits (80 of 288; 314 of 8,832 with 5 resource managers).
+- `tests/run.sh`: 56 specs with hand-derived expected outcomes (counts, depths, shortest
+  traces, deadlock, constraints, refusals, and liveness: WF vs SF, a fair sub-cycle SF must
+  find, vacuous properties, stuck states, fairness under `\A`, stuttering steps), then
+  `tests/differential.py`: random state machines checked against a Python oracle sharing no
+  code with tla (safety by breadth-first search; liveness by trying every set of waiting
+  states, per the definition of a fair behavior), and every counterexample tla shows is
+  verified as a real fair loop. 8,000 cases across 16 seeds agree. `tests/mutants.sh` shows
+  the suite catches each of 11 kinds of wrong answer.
