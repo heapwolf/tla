@@ -17,6 +17,9 @@ import { Tk, Token, Lexed, lex } from "lex.ae";
 import { Op, Node, Kind, Global, Prog, prog, sym, name, add, glob } from "ast.ae";
 import str from "std/string";
 
+/// A spec the parser could not read: where and why.
+export failure ParseError { msg: string; }
+
 // A name bound in an expression: a quantifier variable, a parameter, or a LET definition
 // (arity: -1 for a bound value, n >= 0 for a LET definition with n parameters).
 struct Bound {
@@ -928,8 +931,44 @@ impl Parser {
                         while (true) {
                             if (!self.at_kw("_")) { fail self.err("expected _"); }
                             self.skip();
+                            params.push(-1);
+                            if (!self.at_op(",")) { break; }
+                            self.skip();
+                        }
+                        self.expect_op(")")?;
+                        let s: i64 = sym(r);
+                        if (prog.globals.has(s)) { fail self.err("\(r) is already defined"); }
+                        prog.globals.put(s, Global { kind: Kind::Def, params: params, line: self.toks[self.i].line });
+                        if (!self.at_op(",")) { break; }
+                        self.skip();
+                    }
+                },
+                "LOCAL" => {
+                    self.skip();
+                    self.definition(false)?;
+                },
+                "INSTANCE" => { fail self.err("the subset has no INSTANCE"); },
+                _ => {
+                    // A SPECIFICATION's formula may use [] and fairness: allow them in any
+                    // definition, and refuse them where evaluated.
+                    self.spec_ok = true;
+                    self.definition(false)?;
+                    self.spec_ok = false;
+                },
             }
         }
+        return m;
+    }
+
+    // EXTENDS of a user module: Name.tla beside this file, into the same prog.
+    fn extend(mut self: &Parser, m: string) -> void | ParseError {
+        var path: string = "\(m).tla";
+        if (self.dir.len > 0) { path = "\(self.dir)/\(m).tla"; }
+        if (let src = fs::read_file(path)) {
+            parse_into(src, path, self.dir)?;
+            return;
+        }
+        fail self.err("no module \(m): not a standard one, and no \(path)");
     }
 }
 

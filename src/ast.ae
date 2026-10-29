@@ -143,3 +143,9 @@ export fn add(n: Node) -> i64 {
     prog.nodes.push(n);
     return prog.nodes.len - 1;
 }
+
+/// Node n's position, as file:line:col.
+export fn pos(n: i64) -> string {
+    let nd: &Node = &prog.nodes[n];
+    return "\(prog.module):\(nd.line):\(nd.col)";
+}

@@ -917,6 +917,14 @@ export fn check(o: &Options) -> Report {
             return r;
         },
     }
+    match (run(o, &c, mut &r)) {
+        v => {},
+        e: EvalError => {
+            say(mut &r, "Error: \(where_at()): \(e.msg)");
+            r.code = 75;
+        },
+    }
+    return r;
 }
 
 fn run(o: &Options, c: &Cfg, mut r: &Report) -> void | EvalError {
@@ -1156,9 +1164,13 @@ fn run(o: &Options, c: &Cfg, mut r: &Report) -> void | EvalError {
         for (let i: i64 in 0..s.props.len) {
             if (!holds_eventually(mut &s, i, r)?) {
                 r.code = 13;
+                counts(&s, r);
+                return;
             }
         }
     }
+    say(r, "Model checking completed. No error has been found.");
+    counts(&s, r);
 }
 
 // The examples in examples/, with TLC's counts (a separate brute-force count agrees):

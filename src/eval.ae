@@ -532,8 +532,30 @@ export fn eval(n: i64, env: i64) -> i64 | EvalError {
             let items: i64[] = std::copy(prog.nodes[n].kids);
             for (let it: i64 in &items) {
                 let path: i64[] = std::copy(prog.nodes[it].kids);
+                f = except_at(f, &path, 0, it, env)?;
             }
-        }
+            return f;
+        },
+        Op::At => {
+            let e: i64 = find_env(prog.at, env);
+            return cx.envs.vals[e];
+        },
+        Op::If => {
+            if (boolean(eval(prog.nodes[n].a, env)?)?) { return eval(prog.nodes[n].b, env); }
+            return eval(prog.nodes[n].c, env);
+        },
+        Op::Case => {
+            let arms: i64[] = std::copy(prog.nodes[n].kids);
+            for (let arm: i64 in &arms) {
+                if (boolean(eval(prog.nodes[arm].a, env)?)?) { return eval(prog.nodes[arm].b, env); }
+            }
+            if (prog.nodes[n].c >= 0) { return eval(prog.nodes[n].c, env); }
+            cx.at = n;
+            fail err("no CASE arm applies, and there is no OTHER");
+        },
+        Op::Let => { return eval(prog.nodes[n].b, let_env(n, env)); },
+        Op::Box | Op::ActSub | Op::Fair | Op::Diamond | Op::LeadsTo => { fail err("a temporal formula, which only a SPECIFICATION or a PROPERTY may hold"); },
+        Op::LetDef | Op::CaseArm | Op::ExceptItem => { fail err("internal: a \(op) evaluated alone"); },
     }
 }
 
