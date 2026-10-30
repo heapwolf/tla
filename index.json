@@ -1,6 +1,6 @@
 {
     "name": "tla",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "description": "a model checker for a subset of TLA+ (README.md): safety invariants, as in TLC",
     "products": [
         { "name": "tla", "entry": "src/main.ae" }
