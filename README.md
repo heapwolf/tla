@@ -1,4 +1,4 @@
-# tla: a model checker for a subset of TLA+, in Aela
+# `tla`: a model checker for a subset of TLA+, in Aela
 
 tla checks every reachable state of a TLA+ spec, as TLC does, without Java: safety
 invariants, and liveness properties under the SPECIFICATION's fairness. A spec is a TLA+
@@ -15,11 +15,11 @@ aec test src                            # in-code tests: the examples, TLC's cou
 tests/run.sh                            # test suite (tests/README.md)
 ```
 
-Trust a model only once it catches bugs planted in it: a `Bugs` constant names each planted
-bug, and some invariant or property must find each one (see aedb's spec/AntiEntropy.tla and
-api's spec/check.sh).
+You should only trust a model only once it catches bugs planted in it: a `Bugs` constant
+names each planted bug, and some invariant or property must find each one (see aedb's
+spec/AntiEntropy.tla and api's spec/check.sh).
 
-## The subset of TLA+
+## The Subset
 
 Invariants are checked as in TLC (breadth-first, giving the shortest trace to a violation),
 and so are properties (strongly connected components of the state graph, against the
@@ -56,7 +56,7 @@ they use):
 | `<>Q` | Q holds eventually, from the initial states |
 
 For fairness, a step of A means `<<A>>_vars`, one that changes the state; a stuttering step
-neither counts as A nor makes A enabled. Every state may stutter. As in TLC, the state graph
+neither counts as A nor makes A enabled (every state may stutter) As in TLC, the state graph
 is kept (successors, which fairness conditions each step satisfies, where each is enabled).
 The waiting states (reachable from a P-and-not-Q state through not-Q states) are split into
 strongly connected components. A component is fair if each WF action is taken in it or
@@ -88,7 +88,7 @@ periodically. A violation's trace is rebuilt from the initial states, each step 
 successor with the next fingerprint. `-simulate N -depth D -seed S` checks random behaviors
 instead: it finds deep bugs but proves nothing.
 
-**Testing.** Two layers (details in tests/README.md):
+## Testing
 
 - `aec test src`: the examples in `examples` with TLC's counts (Lamport's TCommit, 34
   states; TwoPhase, 288, and 80 with SYMMETRY; DieHard's 7-state trace); `Semantics.tla`,
